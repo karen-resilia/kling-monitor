@@ -98,43 +98,55 @@ async function login(page, email, password) {
   });
   console.log('Clickable elements: ' + allText);
 
-  // Try multiple selectors for the Sign In button
-  const signInSelectors = [
-    'text="Sign In"',
-    'text="Sign in"',
-    'text="Login"',
-    'a:has-text("Sign In")',
-    'button:has-text("Sign In")',
-    '[class*="sign-in"]',
-    '[class*="login"]',
-    '[href*="login"]',
-    '[href*="sign-in"]',
-  ];
-
-  let clicked = false;
-  for (const sel of signInSelectors) {
-    try {
-      await page.click(sel, { timeout: 5000 });
-      clicked = true;
-      console.log('Clicked sign in with selector: ' + sel);
-      break;
-    } catch {
-      continue;
-    }
-  }
-
-  if (!clicked) {
-    throw new Error('Could not find Sign In button. Page title: ' + await page.title());
-  }
-
-  await page.waitForTimeout(2000);
-
-  // Click "Sign in with email"
+  // First dismiss the "Sign In to Claim Gift" popup if present
   try {
-    await page.click('text="Sign in with email"', { timeout: 8000 });
+    await page.click('button:has-text("Sign In to Claim Gift"), a:has-text("Sign In to Claim Gift")', { timeout: 3000 });
+    await page.waitForTimeout(1000);
+    // That opens the login modal directly - check if email form is now visible
+    const emailInput = await page.$('input[type="email"], input[name="email"]');
+    if (emailInput) {
+      console.log('Login modal opened via claim gift button');
+      await page.fill('input[type="email"], input[name="email"]', email);
+      await page.waitForTimeout(500);
+      await page.fill('input[type="password"], input[name="password"]', password);
+      await page.waitForTimeout(500);
+      await page.click('button[type="submit"], button:has-text("Sign In"), button:has-text("Login"), button:has-text("Continue")');
+      await page.waitForTimeout(5000);
+      await page.waitForLoadState('domcontentloaded');
+      return;
+    }
+    // Modal opened but need to click "Sign in with email"
+    await page.click('text="Sign in with email"', { timeout: 5000 });
     await page.waitForTimeout(1500);
   } catch {
-    // may already be on email form
+    // No claim gift popup, try closing it and finding sidebar Sign In
+    try {
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(1000);
+    } catch { /* ignore */ }
+
+    // Try sidebar Sign In link
+    const signInSelectors = [
+      'a:has-text("Sign In"):not(:has-text("Claim"))',
+      'button:has-text("Sign In"):not(:has-text("Claim"))',
+      '[class*="sign-in"]',
+      '[class*="login-btn"]',
+    ];
+    let clicked = false;
+    for (const sel of signInSelectors) {
+      try {
+        await page.click(sel, { timeout: 5000 });
+        clicked = true;
+        console.log('Clicked sign in with: ' + sel);
+        break;
+      } catch { continue; }
+    }
+    if (!clicked) throw new Error('Could not find Sign In button. Page title: ' + await page.title());
+    await page.waitForTimeout(2000);
+    try {
+      await page.click('text="Sign in with email"', { timeout: 8000 });
+      await page.waitForTimeout(1500);
+    } catch { /* may already be on email form */ }
   }
 
   await page.fill('input[type="email"], input[name="email"]', email);
