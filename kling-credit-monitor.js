@@ -28,8 +28,11 @@ async function checkKlingCredits() {
   const page = await context.newPage();
 
   try {
+    // Try going directly to the login page
     await page.goto('https://kling.ai/app', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(3000);
+    console.log('Page title: ' + await page.title());
+    console.log('Page URL: ' + page.url());
 
     const isLoggedIn = await page.$('[class*="user-avatar"], [class*="account-menu"], [class*="member"]')
       .then(el => !!el).catch(() => false);
@@ -85,6 +88,15 @@ async function login(page, email, password) {
 
   // Wait for page to fully settle then find Sign In button
   await page.waitForTimeout(3000);
+  console.log('Login page title: ' + await page.title());
+  console.log('Login page URL: ' + page.url());
+
+  // Dump all button/link text to help debug
+  const allText = await page.evaluate(() => {
+    const els = [...document.querySelectorAll('a, button')];
+    return els.map(e => e.innerText.trim()).filter(t => t.length > 0).slice(0, 30).join(' | ');
+  });
+  console.log('Clickable elements: ' + allText);
 
   // Try multiple selectors for the Sign In button
   const signInSelectors = [
