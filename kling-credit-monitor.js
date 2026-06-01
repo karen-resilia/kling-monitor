@@ -163,20 +163,31 @@ async function scrapeCredits(page) {
   const bodyText = await page.evaluate(() => document.body.innerText);
   const lines = bodyText.split('\n');
 
+  console.log('--- Page text sample ---');
+  lines.slice(0, 40).forEach((l, i) => { if (l.trim()) console.log(i + ': ' + l.trim()); });
+  console.log('--- End sample ---');
+
+  // Look for a line that starts with "Credits" and has a number immediately after
+  // e.g. "Credits  18135" — take the FIRST number on that line (the total, not expiring)
   for (const line of lines) {
-    if (/^credits/i.test(line.trim()) && /\d{3,}/.test(line)) {
+    const trimmed = line.trim();
+    if (/^credits\s/i.test(trimmed) && /\d{3,}/.test(trimmed)) {
+      const numbers = trimmed.match(/[\d,]+/g);
+      if (numbers && numbers.length > 0) {
+        // First number on the line is the total balance
+        return parseInt(numbers[0].replace(/,/g, ''));
+      }
+    }
+  }
+
+  // Fallback: find the largest number near "Credits" text
+  for (const line of lines) {
+    if (line.toLowerCase().includes('credit') && /\d{4,}/.test(line)) {
       const numbers = line.match(/[\d,]+/g);
       if (numbers) {
         const vals = numbers.map(n => parseInt(n.replace(/,/g, '')));
         return Math.max(...vals);
       }
-    }
-  }
-
-  for (const line of lines) {
-    if (line.toLowerCase().includes('credit') && /\d{4,}/.test(line)) {
-      const match = line.match(/[\d,]+/);
-      if (match) return parseInt(match[0].replace(/,/g, ''));
     }
   }
 
