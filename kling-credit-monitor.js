@@ -1,38 +1,203 @@
-name: Kling Credit Monitor
+// Kling.ai Credit Monitor
+// Posts credit balance to Slack every 2 hours.
+// Adds a warning flag if credits drop at or below CREDIT_THRESHOLD.
 
-on:
-  schedule:
-    - cron: '0 */2 * * *'  # Every 2 hours
-  workflow_dispatch:          # Also allows manual trigger from GitHub
+import { chromium } from 'playwright';
+import * as dotenv from 'dotenv';
+dotenv.config();
 
-jobs:
-  check-credits:
-    runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+const CONFIG = {
+  slackWebhookUrl: process.env.SLACK_WEBHOOK_URL,
+  threshold: parseInt(process.env.CREDIT_THRESHOLD || '100'),
+  slackChannel: process.env.SLACK_CHANNEL || '#production-credits-monitor',
+  teamName: process.env.TEAM_NAME || 'the team',
+  klingEmail: process.env.KLING_EMAIL,
+  klingPassword: process.env.KLING_PASSWORD,
+  headless: process.env.HEADLESS !== 'false',
+};
 
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+async function checkKlingCredits() {
+  console.log('Checking Kling.ai credits...');
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
+  if (!CONFIG.klingEmail || !CONFIG.klingPassword) {
+    throw new Error('Missing KLING_EMAIL or KLING_PASSWORD in .env file');
+  }
 
-      - name: Install dependencies
-        run: npm install
+  const browser = await chromium.launch({ headless: CONFIG.headless });
+  const context = await browser.newContext();
+  const page = await context.newPage();
 
-      - name: Install Playwright browser
-        run: npx playwright install chromium --with-deps
+  try {
+    await page.goto('https://kling.ai/app', { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2000);
 
-      - name: Run credit monitor
-        env:
-          KLING_EMAIL: ${{ secrets.KLING_EMAIL }}
-          KLING_PASSWORD: ${{ secrets.KLING_PASSWORD }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          CREDIT_THRESHOLD: ${{ secrets.CREDIT_THRESHOLD }}
-          SLACK_CHANNEL: '#production-credits-monitor'
-          TEAM_NAME: 'the team'
-          HEADLESS: 'true'
-        run: node kling-credit-monitor.js
+    const isLoggedIn = await page.$('[class*="user-avatar"], [class*="account-menu"], [class*="member"]')
+      .then(el => !!el).catch(() => false);
+
+    if (!isLoggedIn) {
+      console.log('Logging in...');
+      await login(page, CONFIG.klingEmail, CONFIG.klingPassword);
+    }
+
+    await page.goto('https://kling.ai/app/membership/membership-plan', { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(3000);
+
+    const popupSelectors = [
+      'button:has-text("English")',
+      'button:has-text("OK")',
+      'button:has-text("Got it")',
+      'button:has-text("Close")',
+      'button:has-text("Confirm")',
+      '[class*="close"]',
+      '[aria-label="close"]',
+      '[aria-label="Close"]',
+    ];
+    for (const sel of popupSelectors) {
+      try {
+        await page.click(sel, { timeout: 2000 });
+        await page.waitForTimeout(500);
+      } catch {
+        // no popup with this selector, continue
+      }
+    }
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(500);
+
+    const credits = await scrapeCredits(page);
+    console.log('Credits found: ' + credits);
+    await browser.close();
+    return credits;
+
+  } catch (err) {
+    await browser.close();
+    throw err;
+  }
+}
+
+async function login(page, email, password) {
+  try {
+    await page.click('[class*="close"], [aria-label="close"], button:has-text("x")', { timeout: 3000 });
+    await page.waitForTimeout(500);
+  } catch {
+    // no overlay
+  }
+
+  await page.click('text="Sign In"', { timeout: 10000 });
+  await page.waitForTimeout(1500);
+
+  await page.click('text="Sign in with email"', { timeout: 10000 });
+  await page.waitForTimeout(1500);
+
+  await page.fill('input[type="email"], input[name="email"]', email);
+  await page.waitForTimeout(500);
+  await page.fill('input[type="password"], input[name="password"]', password);
+  await page.waitForTimeout(500);
+  await page.click('button[type="submit"], button:has-text("Sign In"), button:has-text("Login"), button:has-text("Continue")');
+
+  await page.waitForTimeout(4000);
+  await page.waitForLoadState('domcontentloaded');
+}
+
+async function scrapeCredits(page) {
+  const bodyText = await page.evaluate(() => document.body.innerText);
+  const lines = bodyText.split('\n');
+
+  for (const line of lines) {
+    if (/^credits/i.test(line.trim()) && /\d{3,}/.test(line)) {
+      const numbers = line.match(/[\d,]+/g);
+      if (numbers) {
+        const vals = numbers.map(n => parseInt(n.replace(/,/g, '')));
+        return Math.max(...vals);
+      }
+    }
+  }
+
+  for (const line of lines) {
+    if (line.toLowerCase().includes('credit') && /\d{4,}/.test(line)) {
+      const match = line.match(/[\d,]+/);
+      if (match) return parseInt(match[0].replace(/,/g, ''));
+    }
+  }
+
+  throw new Error('Could not find credit balance. Try running with HEADLESS=false to inspect the page.');
+}
+
+async function sendSlackUpdate(credits) {
+  if (!CONFIG.slackWebhookUrl) {
+    console.warn('No SLACK_WEBHOOK_URL set - skipping Slack notification');
+    return;
+  }
+
+  const isLow = credits <= CONFIG.threshold;
+  const now = new Date().toLocaleString('en-US', {
+    weekday: 'short', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', hour12: true,
+  });
+
+  const statusText = isLow
+    ? 'Low - at or below threshold of ' + CONFIG.threshold.toLocaleString()
+    : 'OK';
+
+  const payload = {
+    text: (isLow ? 'WARNING' : 'OK') + ' Kling.ai credits: ' + credits.toLocaleString(),
+    blocks: [
+      {
+        type: 'section',
+        fields: [
+          { type: 'mrkdwn', text: '*Kling.ai credits*\n' + (isLow ? ':warning:' : ':white_check_mark:') + ' *' + credits.toLocaleString() + '* - ' + statusText },
+          { type: 'mrkdwn', text: '*Checked at*\n' + now },
+        ],
+      },
+      ...(isLow ? [{
+        type: 'actions',
+        elements: [{
+          type: 'button',
+          text: { type: 'plain_text', text: 'Top up credits' },
+          url: 'https://kling.ai/app/membership/membership-plan',
+          style: 'danger',
+        }],
+      }] : []),
+    ],
+  };
+
+  const response = await fetch(CONFIG.slackWebhookUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error('Slack webhook failed: ' + response.status + ' ' + response.statusText);
+  }
+
+  console.log('Slack update sent successfully!');
+}
+
+(async () => {
+  try {
+    const credits = await checkKlingCredits();
+
+    if (credits <= CONFIG.threshold) {
+      console.log('Credits low: ' + credits + ' (threshold: ' + CONFIG.threshold + ')');
+    } else {
+      console.log('Credits OK: ' + credits + ' (threshold: ' + CONFIG.threshold + ')');
+    }
+
+    await sendSlackUpdate(credits);
+
+  } catch (err) {
+    console.error('Error: ' + err.message);
+
+    if (CONFIG.slackWebhookUrl) {
+      await fetch(CONFIG.slackWebhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: 'Kling.ai credit monitor failed to run: ' + err.message,
+        }),
+      }).catch(() => {});
+    }
+
+    process.exit(1);
+  }
+})();
