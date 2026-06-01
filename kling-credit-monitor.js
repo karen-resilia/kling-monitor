@@ -167,26 +167,34 @@ async function scrapeCredits(page) {
   lines.slice(0, 40).forEach((l, i) => { if (l.trim()) console.log(i + ': ' + l.trim()); });
   console.log('--- End sample ---');
 
-  // Look for a line that starts with "Credits" and has a number immediately after
-  // e.g. "Credits  18135" — take the FIRST number on that line (the total, not expiring)
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (/^credits\s/i.test(trimmed) && /\d{3,}/.test(trimmed)) {
-      const numbers = trimmed.match(/[\d,]+/g);
-      if (numbers && numbers.length > 0) {
-        // First number on the line is the total balance
-        return parseInt(numbers[0].replace(/,/g, ''));
+  // The page structure is:
+  // line N:   "Credits"
+  // line N+1: "18135"   <-- this is the total balance we want
+  // line N+2: "2135Credits will expire..." <-- this is NOT what we want
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim().toLowerCase() === 'credits') {
+      // Next non-empty line should be the total balance
+      for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+        const next = lines[j].trim();
+        if (/^[\d,]+$/.test(next)) {
+          const val = parseInt(next.replace(/,/g, ''));
+          console.log('Found credits on line ' + j + ': ' + val);
+          return val;
+        }
       }
     }
   }
 
-  // Fallback: find the largest number near "Credits" text
-  for (const line of lines) {
-    if (line.toLowerCase().includes('credit') && /\d{4,}/.test(line)) {
-      const numbers = line.match(/[\d,]+/g);
-      if (numbers) {
-        const vals = numbers.map(n => parseInt(n.replace(/,/g, '')));
-        return Math.max(...vals);
+  // Fallback: find largest standalone number near "Credits"
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim().toLowerCase() === 'credits') {
+      for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+        const match = lines[j].trim().match(/^[\d,]+/);
+        if (match) {
+          const val = parseInt(match[0].replace(/,/g, ''));
+          console.log('Fallback credits on line ' + j + ': ' + val);
+          return val;
+        }
       }
     }
   }
