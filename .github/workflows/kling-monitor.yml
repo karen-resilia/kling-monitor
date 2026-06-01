@@ -1,0 +1,36 @@
+name: Kling Credit Monitor
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'  # Every 2 hours
+  workflow_dispatch:          # Also allows manual trigger from GitHub
+
+jobs:
+  check-credits:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Playwright browser
+        run: npx playwright install chromium --with-deps
+
+      - name: Run credit monitor
+        env:
+          KLING_EMAIL: ${{ secrets.KLING_EMAIL }}
+          KLING_PASSWORD: ${{ secrets.KLING_PASSWORD }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          CREDIT_THRESHOLD: ${{ secrets.CREDIT_THRESHOLD }}
+          SLACK_CHANNEL: '#production-credits-monitor'
+          TEAM_NAME: 'the team'
+          HEADLESS: 'true'
+        run: node kling-credit-monitor.js
