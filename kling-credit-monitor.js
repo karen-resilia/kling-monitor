@@ -190,26 +190,38 @@ async function sendSlackUpdate(credits) {
   }
 
   const isLow = credits <= CONFIG.threshold;
+  const isUrgent = credits < 2000;
   const now = new Date().toLocaleString('en-US', {
     weekday: 'short', month: 'short', day: 'numeric',
     hour: 'numeric', minute: '2-digit', hour12: true,
   });
 
-  const statusText = isLow
+  const statusText = isUrgent
+    ? 'Attention needed - under 2,000 credits remaining'
+    : isLow
     ? 'Low - at or below threshold of ' + CONFIG.threshold.toLocaleString()
     : 'OK';
 
+  const icon = isUrgent ? ':rotating_light:' : isLow ? ':warning:' : ':white_check_mark:';
+
+  // Prepend @channel mention when urgent so the whole channel is notified
+  const channelMention = isUrgent ? '<!channel> ' : '';
+
   const payload = {
-    text: (isLow ? 'WARNING' : 'OK') + ' Kling.ai credits: ' + credits.toLocaleString(),
+    text: channelMention + (isUrgent ? 'URGENT' : isLow ? 'WARNING' : 'OK') + ' Kling.ai credits: ' + credits.toLocaleString(),
     blocks: [
+      ...(isUrgent ? [{
+        type: 'section',
+        text: { type: 'mrkdwn', text: '<!channel> *Kling.ai credits are under 2,000 — action needed!*' },
+      }] : []),
       {
         type: 'section',
         fields: [
-          { type: 'mrkdwn', text: '*Kling.ai credits*\n' + (isLow ? ':warning:' : ':white_check_mark:') + ' *' + credits.toLocaleString() + '* - ' + statusText },
+          { type: 'mrkdwn', text: '*Kling.ai credits*\n' + icon + ' *' + credits.toLocaleString() + '* - ' + statusText },
           { type: 'mrkdwn', text: '*Checked at*\n' + now },
         ],
       },
-      ...(isLow ? [{
+      ...(isUrgent || isLow ? [{
         type: 'actions',
         elements: [{
           type: 'button',
