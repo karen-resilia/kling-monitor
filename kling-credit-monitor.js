@@ -75,6 +75,7 @@ async function checkKlingCredits() {
 }
 
 async function login(page, email, password) {
+  // Dismiss any overlay
   try {
     await page.click('[class*="close"], [aria-label="close"], button:has-text("x")', { timeout: 3000 });
     await page.waitForTimeout(500);
@@ -82,11 +83,47 @@ async function login(page, email, password) {
     // no overlay
   }
 
-  await page.click('text="Sign In"', { timeout: 10000 });
-  await page.waitForTimeout(1500);
+  // Wait for page to fully settle then find Sign In button
+  await page.waitForTimeout(3000);
 
-  await page.click('text="Sign in with email"', { timeout: 10000 });
-  await page.waitForTimeout(1500);
+  // Try multiple selectors for the Sign In button
+  const signInSelectors = [
+    'text="Sign In"',
+    'text="Sign in"',
+    'text="Login"',
+    'a:has-text("Sign In")',
+    'button:has-text("Sign In")',
+    '[class*="sign-in"]',
+    '[class*="login"]',
+    '[href*="login"]',
+    '[href*="sign-in"]',
+  ];
+
+  let clicked = false;
+  for (const sel of signInSelectors) {
+    try {
+      await page.click(sel, { timeout: 5000 });
+      clicked = true;
+      console.log('Clicked sign in with selector: ' + sel);
+      break;
+    } catch {
+      continue;
+    }
+  }
+
+  if (!clicked) {
+    throw new Error('Could not find Sign In button. Page title: ' + await page.title());
+  }
+
+  await page.waitForTimeout(2000);
+
+  // Click "Sign in with email"
+  try {
+    await page.click('text="Sign in with email"', { timeout: 8000 });
+    await page.waitForTimeout(1500);
+  } catch {
+    // may already be on email form
+  }
 
   await page.fill('input[type="email"], input[name="email"]', email);
   await page.waitForTimeout(500);
@@ -94,7 +131,7 @@ async function login(page, email, password) {
   await page.waitForTimeout(500);
   await page.click('button[type="submit"], button:has-text("Sign In"), button:has-text("Login"), button:has-text("Continue")');
 
-  await page.waitForTimeout(4000);
+  await page.waitForTimeout(5000);
   await page.waitForLoadState('domcontentloaded');
 }
 
