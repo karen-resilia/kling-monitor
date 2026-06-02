@@ -2,8 +2,7 @@ name: Kling Credit Monitor
 
 on:
   schedule:
-    - cron: '0 */2 * * *'  # Every 2 hours
-  workflow_dispatch:          # Also allows manual trigger from GitHub
+ 
 
 jobs:
   check-credits:
