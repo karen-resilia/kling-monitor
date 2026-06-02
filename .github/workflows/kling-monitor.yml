@@ -1,8 +1,7 @@
 name: Kling Credit Monitor
 
 on:
-  schedule:
- 
+  workflow_dispatch:
 
 jobs:
   check-credits:
