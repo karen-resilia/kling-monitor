@@ -208,30 +208,33 @@ async function sendSlackUpdate(credits) {
     return;
   }
 
-  const isLow = credits <= CONFIG.threshold;
   const isUrgent = credits < 2000;
+  const isWarning = credits >= 2000 && credits < 5000;
+  const isLow = credits <= CONFIG.threshold;
   const now = new Date().toLocaleString('en-US', {
     weekday: 'short', month: 'short', day: 'numeric',
     hour: 'numeric', minute: '2-digit', hour12: true,
   });
 
+  // Icons and mentions per tier
+  // Under 2,000  → 🚨 @channel  "X credits remaining — action needed!"
+  // Under 5,000  → ⚠️ @here     "X credits remaining — running low"
+  // OK           → ✅ no ping   "OK"
+  const icon = isUrgent ? ':rotating_light:' : isWarning ? ':warning:' : ':white_check_mark:';
+  const mention = isUrgent ? '<!channel> ' : isWarning ? '<!here> ' : '';
+
   const statusText = isUrgent
-    ? 'Attention needed - under 2,000 credits remaining'
-    : isLow
-    ? 'Low - at or below threshold of ' + CONFIG.threshold.toLocaleString()
+    ? credits.toLocaleString() + ' credits remaining — action needed!'
+    : isWarning
+    ? credits.toLocaleString() + ' credits remaining — running low'
     : 'OK';
 
-  const icon = isUrgent ? ':rotating_light:' : isLow ? ':warning:' : ':white_check_mark:';
-
-  // Prepend @channel mention when urgent so the whole channel is notified
-  const channelMention = isUrgent ? '<!channel> ' : '';
-
   const payload = {
-    text: channelMention + (isUrgent ? 'URGENT' : isLow ? 'WARNING' : 'OK') + ' Kling.ai credits: ' + credits.toLocaleString(),
+    text: mention + (isUrgent ? 'URGENT' : isWarning ? 'WARNING' : 'OK') + ' Kling.ai credits: ' + credits.toLocaleString(),
     blocks: [
-      ...(isUrgent ? [{
+      ...(isUrgent || isWarning ? [{
         type: 'section',
-        text: { type: 'mrkdwn', text: '<!channel> *Kling.ai credits are under 2,000 — action needed!*' },
+        text: { type: 'mrkdwn', text: mention + '*Kling.ai credits: ' + statusText + '*' },
       }] : []),
       {
         type: 'section',
@@ -240,7 +243,7 @@ async function sendSlackUpdate(credits) {
           { type: 'mrkdwn', text: '*Checked at*\n' + now },
         ],
       },
-      ...(isUrgent || isLow ? [{
+      ...(isUrgent || isWarning || isLow ? [{
         type: 'actions',
         elements: [{
           type: 'button',
