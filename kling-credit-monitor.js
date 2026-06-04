@@ -9,11 +9,14 @@ dotenv.config();
 const CONFIG = {
   slackWebhookUrl: process.env.SLACK_WEBHOOK_URL,
   threshold: parseInt(process.env.CREDIT_THRESHOLD || '100'),
+  hourlyThreshold: parseInt(process.env.HOURLY_THRESHOLD || '8000'),
   slackChannel: process.env.SLACK_CHANNEL || '#production-credits-monitor',
   teamName: process.env.TEAM_NAME || 'the team',
   klingEmail: process.env.KLING_EMAIL,
   klingPassword: process.env.KLING_PASSWORD,
   headless: process.env.HEADLESS !== 'false',
+  // When true: only post if credits are below hourlyThreshold (used by the hourly job)
+  hourlyMode: process.env.HOURLY_MODE === 'true',
 };
 
 async function checkKlingCredits() {
@@ -209,7 +212,7 @@ async function sendSlackUpdate(credits) {
   }
 
   const isUrgent = credits < 2000;
-  const isWarning = credits >= 2000 && credits < 5000;
+  const isWarning = credits >= 2000 && credits < 4000;
   const isLow = credits <= CONFIG.threshold;
   const now = new Date().toLocaleString('en-US', {
     weekday: 'short', month: 'short', day: 'numeric',
@@ -276,6 +279,12 @@ async function sendSlackUpdate(credits) {
       console.log('Credits low: ' + credits + ' (threshold: ' + CONFIG.threshold + ')');
     } else {
       console.log('Credits OK: ' + credits + ' (threshold: ' + CONFIG.threshold + ')');
+    }
+
+    // In hourly mode, only post to Slack if credits are below the hourly threshold
+    if (CONFIG.hourlyMode && credits >= CONFIG.hourlyThreshold) {
+      console.log('Hourly mode: credits are healthy (' + credits + ' >= ' + CONFIG.hourlyThreshold + '), skipping Slack update.');
+      return;
     }
 
     await sendSlackUpdate(credits);
