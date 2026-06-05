@@ -41,11 +41,3 @@ jobs:
           TEAM_NAME: 'the team'
           HEADLESS: 'true'
         run: node kling-credit-monitor.js
-
-      - name: Upload screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-screenshots
-          path: "*.png"
-          if-no-files-found: ignore
