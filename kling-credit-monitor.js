@@ -101,25 +101,34 @@ async function login(page, email, password) {
   });
   console.log('Clickable elements: ' + allText);
 
-  // Step 1: Dismiss any promotional popups (anniversary, claim gift, etc.)
+  // Step 1: Dismiss the anniversary popup by clicking its X button
+  // The X is in the top-right corner of the popup at roughly (908, 54)
+  try {
+    await page.mouse.click(908, 54);
+    console.log('Clicked anniversary popup X button');
+    await page.waitForTimeout(1000);
+  } catch { /* ignore */ }
+
+  // Also try selector-based close in case coordinates shift
   const popupDismissSelectors = [
-    'button[class*="close"]',
     '[aria-label="Close"]',
     '[aria-label="close"]',
+    'button[class*="close"]',
+    'button[class*="Close"]',
     'button:has-text("×")',
-    'button:has-text("x")',
+    'button:has-text("✕")',
   ];
   for (const sel of popupDismissSelectors) {
     try {
       await page.click(sel, { timeout: 2000 });
-      console.log('Dismissed popup with: ' + sel);
-      await page.waitForTimeout(1000);
-      break;
+      console.log('Dismissed popup with selector: ' + sel);
+      await page.waitForTimeout(500);
     } catch { continue; }
   }
-  // Also try Escape key to close any overlay
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(1000);
+
+  // Step 2: Wait for the secondary "Sign in to Obtain" popup to auto-dismiss (it disappears after ~5s)
+  console.log('Waiting for secondary popup to auto-dismiss...');
+  await page.waitForTimeout(6000);
 
   // Step 2: Find and click the Sign In button in the sidebar
   const signInSelectors = [
