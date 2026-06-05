@@ -97,36 +97,64 @@ async function checkKlingCredits() {
     await page.waitForTimeout(5000);
     await page.screenshot({ path: 'ss8-after-login.png' });
 
-    // Step 7: Click the credit counter in the bottom-left sidebar
-    // It shows as "1.9k" or similar next to a green coin icon
-    console.log('Looking for credit counter in sidebar...');
+    // Step 7: Wait for the credit counter to appear in the sidebar after login
+    // It briefly shows "Sign In" then switches to the credit number (e.g. "1.8k")
+    // Wait up to 15 seconds for the credit number to appear
+    console.log('Waiting for credit counter to appear in sidebar...');
+    try {
+      await page.waitForFunction(() => {
+        // Look for any element in the sidebar that contains a number (credit count)
+        // It appears as "1.8k" or "1,800" near the bottom left
+        const allEls = [...document.querySelectorAll('*')];
+        return allEls.some(el => {
+          const text = el.innerText || '';
+          return /^\d+\.?\d*k?$/.test(text.trim()) && el.offsetParent !== null;
+        });
+      }, { timeout: 15000 });
+      console.log('Credit counter appeared');
+    } catch {
+      console.log('Credit counter wait timed out, proceeding anyway...');
+    }
+    await page.waitForTimeout(1000);
     await page.screenshot({ path: 'ss9-looking-for-credits.png' });
 
-    // Click the credit amount shown in the sidebar bottom-left
-    const creditSelectors = [
-      '[class*="credit"]:has-text("k")',
-      '[class*="credit"]:has-text(".")',
-      '[class*="coin"]',
-      '[class*="balance"]',
-      '.sidebar [class*="credit"]',
-    ];
+    // The credit counter is near the bottom of the left sidebar
+    // Try clicking the element that contains the credit number
     let creditClicked = false;
+
+    // Try finding by the green coin icon area at bottom of sidebar
+    const creditSelectors = [
+      // Look for elements containing numbers like "1.8k" or "1,800" near bottom of sidebar
+      '[class*="user-info"]',
+      '[class*="userInfo"]',
+      '[class*="member-info"]',
+      '[class*="credit-num"]',
+      '[class*="creditNum"]',
+      '[class*="coin-num"]',
+      'span[class*="num"]',
+    ];
+
     for (const sel of creditSelectors) {
       try {
-        await page.click(sel, { timeout: 3000 });
+        await page.click(sel, { timeout: 2000 });
         console.log('Clicked credit selector: ' + sel);
         creditClicked = true;
+        await page.waitForTimeout(2000);
+        await page.screenshot({ path: 'ss10-after-credit-click.png' });
         break;
       } catch { continue; }
     }
 
     if (!creditClicked) {
-      // Navigate directly to membership page as fallback
-      console.log('Could not click credit counter, navigating to membership page...');
-      await page.goto('https://kling.ai/app/membership/membership-plan', { waitUntil: 'domcontentloaded' });
+      // Fallback: click the bottom-left area of the sidebar where the credit number appears
+      // Based on screenshots the credit counter is at approximately x=35, y=810 on a 1280px wide page
+      console.log('Trying coordinate click on credit counter...');
+      await page.mouse.click(35, 810);
+      await page.waitForTimeout(2000);
+      await page.screenshot({ path: 'ss10-after-coord-click.png' });
     }
 
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(1000);
     await page.screenshot({ path: 'ss10-credits-page.png' });
 
     const credits = await scrapeCredits(page);
