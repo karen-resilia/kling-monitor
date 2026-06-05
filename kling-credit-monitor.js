@@ -137,9 +137,35 @@ async function login(page, email, password) {
       console.log('No Sign in with email button, trying direct fill...');
     }
 
-    // Take a screenshot so we can see what the login modal looks like
-    await page.screenshot({ path: 'screenshot-after-joinnow.png', fullPage: true });
-    console.log('Screenshot saved: screenshot-after-joinnow.png');
+    // The anniversary popup closed, now "Sign In to Claim Gift" popup appears
+    // Click that button to open the login modal
+    try {
+      await page.click('button:has-text("Sign In to Claim Gift"), a:has-text("Sign In to Claim Gift")', { timeout: 5000 });
+      console.log('Clicked Sign In to Claim Gift');
+      await page.waitForTimeout(2000);
+    } catch {
+      console.log('No Sign In to Claim Gift button found, trying Sign In to Claim Gift dismiss...');
+    }
+
+    // Now click "Sign in with email"
+    try {
+      await page.click('text="Sign in with email"', { timeout: 5000 });
+      console.log('Clicked Sign in with email');
+      await page.waitForTimeout(1500);
+    } catch {
+      console.log('No Sign in with email, trying direct fill...');
+    }
+
+    await page.fill('input[type="email"], input[name="email"]', email);
+    console.log('Filled email');
+    await page.waitForTimeout(500);
+    await page.fill('input[type="password"]', password);
+    console.log('Filled password');
+    await page.waitForTimeout(500);
+    await page.click('button[type="submit"]');
+    console.log('Clicked submit');
+    await page.waitForTimeout(5000);
+    await page.waitForLoadState('domcontentloaded');
     return;
   }
 
@@ -205,8 +231,13 @@ async function scrapeCredits(page) {
   // line N:   "Credits"
   // line N+1: "18135"   <-- this is the total balance we want
   // line N+2: "2135Credits will expire..." <-- this is NOT what we want
+  // We want the SECOND "Credits" label (first is the nav tab, second is the balance section)
+  let creditsCount = 0;
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].trim().toLowerCase() === 'credits') {
+      creditsCount++;
+      // Skip the first "Credits" nav tab, use the second one which is the balance section
+      if (creditsCount < 2) continue;
       // Next non-empty line should be the total balance
       for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
         const next = lines[j].trim();
@@ -215,19 +246,14 @@ async function scrapeCredits(page) {
           console.log('Found credits on line ' + j + ': ' + val);
           return val;
         }
-      }
-    }
-  }
-
-  // Fallback: find largest standalone number near "Credits"
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim().toLowerCase() === 'credits') {
-      for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
-        const match = lines[j].trim().match(/^[\d,]+/);
+        // Also handle format like "18135" directly on same line
+        const match = next.match(/^[\d,]+/);
         if (match) {
           const val = parseInt(match[0].replace(/,/g, ''));
-          console.log('Fallback credits on line ' + j + ': ' + val);
-          return val;
+          if (val > 100) {
+            console.log('Fallback credits on line ' + j + ': ' + val);
+            return val;
+          }
         }
       }
     }
