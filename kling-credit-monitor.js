@@ -1,6 +1,6 @@
 // Kling.ai Credit Monitor
 // Posts credit balance to Slack every 2 hours.
-// Adds a warning flag if credits drop at or below CREDIT_THRESHOLD.
+// Adds escalating alerts based on credit thresholds.
 
 import { chromium } from 'playwright';
 import * as dotenv from 'dotenv';
@@ -15,7 +15,6 @@ const CONFIG = {
   klingEmail: process.env.KLING_EMAIL,
   klingPassword: process.env.KLING_PASSWORD,
   headless: process.env.HEADLESS !== 'false',
-  // When true: only post if credits are below hourlyThreshold (used by the hourly job)
   hourlyMode: process.env.HOURLY_MODE === 'true',
 };
 
@@ -31,43 +30,106 @@ async function checkKlingCredits() {
   const page = await context.newPage();
 
   try {
-    // Try going directly to the login page
     await page.goto('https://kling.ai/app', { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(3000);
+    await page.screenshot({ path: 'ss1-initial.png' });
     console.log('Page title: ' + await page.title());
-    console.log('Page URL: ' + page.url());
 
-    const isLoggedIn = await page.$('[class*="user-avatar"], [class*="account-menu"], [class*="member"]')
-      .then(el => !!el).catch(() => false);
+    // Step 1: Close the anniversary popup by clicking its X button
+    try {
+      // The X button is inside the anniversary popup modal
+      await page.click('.modal-close, [class*="modal"] button[class*="close"], button[class*="close"]:visible', { timeout: 3000 });
+      console.log('Closed popup via selector');
+    } catch {
+      console.log('No close selector found, trying Join Now...');
+    }
+    await page.waitForTimeout(1000);
+    await page.screenshot({ path: 'ss2-after-close.png' });
 
-    if (!isLoggedIn) {
-      console.log('Logging in...');
-      await login(page, CONFIG.klingEmail, CONFIG.klingPassword);
+    // Step 2: If Join Now is visible, click it to open the login modal
+    try {
+      await page.click('button:has-text("Join Now!"), a:has-text("Join Now!")', { timeout: 3000 });
+      console.log('Clicked Join Now');
+      await page.waitForTimeout(3000);
+      await page.screenshot({ path: 'ss3-after-joinnow.png' });
+    } catch {
+      console.log('No Join Now button');
     }
 
-    await page.goto('https://kling.ai/app/membership/membership-plan', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(3000);
-
-    const popupSelectors = [
-      'button:has-text("English")',
-      'button:has-text("OK")',
-      'button:has-text("Got it")',
-      'button:has-text("Close")',
-      'button:has-text("Confirm")',
-      '[class*="close"]',
-      '[aria-label="close"]',
-      '[aria-label="Close"]',
-    ];
-    for (const sel of popupSelectors) {
-      try {
-        await page.click(sel, { timeout: 2000 });
-        await page.waitForTimeout(500);
-      } catch {
-        // no popup with this selector, continue
-      }
+    // Step 3: If "Sign In to Claim Gift" is visible, click it
+    try {
+      await page.click('button:has-text("Sign In to Claim Gift"), a:has-text("Sign In to Claim Gift")', { timeout: 3000 });
+      console.log('Clicked Sign In to Claim Gift');
+      await page.waitForTimeout(2000);
+      await page.screenshot({ path: 'ss4-after-claimgift.png' });
+    } catch {
+      console.log('No Sign In to Claim Gift');
     }
-    await page.keyboard.press('Escape');
+
+    // Step 4: If Sign In sidebar link is visible, click it
+    try {
+      await page.click('text="Sign In"', { timeout: 3000 });
+      console.log('Clicked Sign In sidebar');
+      await page.waitForTimeout(2000);
+      await page.screenshot({ path: 'ss5-after-signin.png' });
+    } catch {
+      console.log('No Sign In sidebar link');
+    }
+
+    // Step 5: Click "Sign in with email"
+    try {
+      await page.click('text="Sign in with email"', { timeout: 3000 });
+      console.log('Clicked Sign in with email');
+      await page.waitForTimeout(1500);
+      await page.screenshot({ path: 'ss6-after-emailoption.png' });
+    } catch {
+      console.log('No Sign in with email option');
+    }
+
+    // Step 6: Fill credentials
+    await page.screenshot({ path: 'ss7-before-fill.png' });
+    await page.fill('input[placeholder="Enter Email Address"], input[type="email"], input[name="email"]', CONFIG.klingEmail);
+    console.log('Filled email');
     await page.waitForTimeout(500);
+    await page.fill('input[placeholder="Password"], input[type="password"]', CONFIG.klingPassword);
+    console.log('Filled password');
+    await page.waitForTimeout(500);
+    await page.click('button:has-text("Sign In"):not(:has-text("with")), button[type="submit"]');
+    console.log('Clicked Sign In button');
+    await page.waitForTimeout(5000);
+    await page.screenshot({ path: 'ss8-after-login.png' });
+
+    // Step 7: Click the credit counter in the bottom-left sidebar
+    // It shows as "1.9k" or similar next to a green coin icon
+    console.log('Looking for credit counter in sidebar...');
+    await page.screenshot({ path: 'ss9-looking-for-credits.png' });
+
+    // Click the credit amount shown in the sidebar bottom-left
+    const creditSelectors = [
+      '[class*="credit"]:has-text("k")',
+      '[class*="credit"]:has-text(".")',
+      '[class*="coin"]',
+      '[class*="balance"]',
+      '.sidebar [class*="credit"]',
+    ];
+    let creditClicked = false;
+    for (const sel of creditSelectors) {
+      try {
+        await page.click(sel, { timeout: 3000 });
+        console.log('Clicked credit selector: ' + sel);
+        creditClicked = true;
+        break;
+      } catch { continue; }
+    }
+
+    if (!creditClicked) {
+      // Navigate directly to membership page as fallback
+      console.log('Could not click credit counter, navigating to membership page...');
+      await page.goto('https://kling.ai/app/membership/membership-plan', { waitUntil: 'domcontentloaded' });
+    }
+
+    await page.waitForTimeout(2000);
+    await page.screenshot({ path: 'ss10-credits-page.png' });
 
     const credits = await scrapeCredits(page);
     console.log('Credits found: ' + credits);
@@ -75,148 +137,10 @@ async function checkKlingCredits() {
     return credits;
 
   } catch (err) {
+    await page.screenshot({ path: 'ss-error.png' }).catch(() => {});
     await browser.close();
     throw err;
   }
-}
-
-async function login(page, email, password) {
-  // Dismiss any overlay
-  try {
-    await page.click('[class*="close"], [aria-label="close"], button:has-text("x")', { timeout: 3000 });
-    await page.waitForTimeout(500);
-  } catch {
-    // no overlay
-  }
-
-  // Wait for page to fully settle then find Sign In button
-  await page.waitForTimeout(3000);
-  console.log('Login page title: ' + await page.title());
-  console.log('Login page URL: ' + page.url());
-
-  // Dump all button/link text to help debug
-  const allText = await page.evaluate(() => {
-    const els = [...document.querySelectorAll('a, button')];
-    return els.map(e => e.innerText.trim()).filter(t => t.length > 0).slice(0, 30).join(' | ');
-  });
-  console.log('Clickable elements: ' + allText);
-
-  // Step 1: Dismiss anniversary popup
-  // Try selector-based close first
-  const popupDismissSelectors = [
-    '[aria-label="Close"]',
-    '[aria-label="close"]',
-    'button[class*="close"]',
-    'button[class*="Close"]',
-    'button:has-text("×")',
-    'button:has-text("✕")',
-  ];
-  for (const sel of popupDismissSelectors) {
-    try {
-      await page.click(sel, { timeout: 2000 });
-      console.log('Dismissed popup with selector: ' + sel);
-      await page.waitForTimeout(500);
-      break;
-    } catch { continue; }
-  }
-
-  // If "Join Now!" is still visible, click it — on an unauthenticated browser
-  // it opens the login modal directly, which is exactly what we need
-  const joinNowVisible = await page.$('button:has-text("Join Now!"), a:has-text("Join Now!")').then(el => !!el).catch(() => false);
-  if (joinNowVisible) {
-    console.log('Clicking Join Now to open login modal...');
-    await page.click('button:has-text("Join Now!"), a:has-text("Join Now!")');
-    await page.waitForTimeout(4000);
-
-    // Login form is now open — click "Sign in with email" if present, then fill credentials
-    try {
-      await page.click('text="Sign in with email"', { timeout: 3000 });
-      console.log('Clicked Sign in with email');
-      await page.waitForTimeout(1500);
-    } catch {
-      console.log('No Sign in with email button, trying direct fill...');
-    }
-
-    // The anniversary popup closed, now "Sign In to Claim Gift" popup appears
-    // Click that button to open the login modal
-    try {
-      await page.click('button:has-text("Sign In to Claim Gift"), a:has-text("Sign In to Claim Gift")', { timeout: 5000 });
-      console.log('Clicked Sign In to Claim Gift');
-      await page.waitForTimeout(2000);
-    } catch {
-      console.log('No Sign In to Claim Gift button found, trying Sign In to Claim Gift dismiss...');
-    }
-
-    // Now click "Sign in with email"
-    try {
-      await page.click('text="Sign in with email"', { timeout: 5000 });
-      console.log('Clicked Sign in with email');
-      await page.waitForTimeout(1500);
-    } catch {
-      console.log('No Sign in with email, trying direct fill...');
-    }
-
-    await page.fill('input[type="email"], input[name="email"]', email);
-    console.log('Filled email');
-    await page.waitForTimeout(500);
-    await page.fill('input[type="password"]', password);
-    console.log('Filled password');
-    await page.waitForTimeout(500);
-    await page.click('button[type="submit"]');
-    console.log('Clicked submit');
-    await page.waitForTimeout(5000);
-    await page.waitForLoadState('domcontentloaded');
-    return;
-  }
-
-  // Step 2: Wait for secondary popup to auto-dismiss
-  console.log('Waiting for secondary popup to auto-dismiss...');
-  await page.waitForTimeout(6000);
-
-  // Step 2: Find and click the Sign In button in the sidebar
-  const signInSelectors = [
-    'text="Sign In"',
-    'text="Sign in"',
-    'a:has-text("Sign In")',
-    'button:has-text("Sign In")',
-    'text="Login"',
-    '[class*="sign-in"]',
-    '[class*="login"]',
-  ];
-  let clicked = false;
-  for (const sel of signInSelectors) {
-    try {
-      await page.click(sel, { timeout: 5000 });
-      clicked = true;
-      console.log('Clicked sign in with: ' + sel);
-      break;
-    } catch { continue; }
-  }
-  if (!clicked) {
-    // Last resort: log all clickable text to help debug
-    const allText = await page.evaluate(() => {
-      const els = [...document.querySelectorAll('a, button')];
-      return els.map(e => e.innerText.trim()).filter(t => t.length > 0).slice(0, 40).join(' | ');
-    });
-    console.log('Clickable elements: ' + allText);
-    throw new Error('Could not find Sign In button. Page title: ' + await page.title());
-  }
-  await page.waitForTimeout(2000);
-
-  // Step 3: Click "Sign in with email" if shown
-  try {
-    await page.click('text="Sign in with email"', { timeout: 8000 });
-    await page.waitForTimeout(1500);
-  } catch { /* may already be on email/password form */ }
-
-  await page.fill('input[type="email"], input[name="email"]', email);
-  await page.waitForTimeout(500);
-  await page.fill('input[type="password"], input[name="password"]', password);
-  await page.waitForTimeout(500);
-  await page.click('button[type="submit"], button:has-text("Sign In"), button:has-text("Login"), button:has-text("Continue")');
-
-  await page.waitForTimeout(5000);
-  await page.waitForLoadState('domcontentloaded');
 }
 
 async function scrapeCredits(page) {
@@ -227,39 +151,49 @@ async function scrapeCredits(page) {
   lines.slice(0, 40).forEach((l, i) => { if (l.trim()) console.log(i + ': ' + l.trim()); });
   console.log('--- End sample ---');
 
-  // The page structure is:
-  // line N:   "Credits"
-  // line N+1: "18135"   <-- this is the total balance we want
-  // line N+2: "2135Credits will expire..." <-- this is NOT what we want
-  // We want the SECOND "Credits" label (first is the nav tab, second is the balance section)
-  let creditsCount = 0;
+  // Look for "Remaining Credits" label followed by a number (from the credit details modal)
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim().toLowerCase() === 'credits') {
-      creditsCount++;
-      // Skip the first "Credits" nav tab, use the second one which is the balance section
-      if (creditsCount < 2) continue;
-      // Next non-empty line should be the total balance
+    if (lines[i].trim().toLowerCase().includes('remaining credits')) {
       for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
         const next = lines[j].trim();
-        if (/^[\d,]+$/.test(next)) {
+        if (/^\d[\d,]*$/.test(next)) {
           const val = parseInt(next.replace(/,/g, ''));
-          console.log('Found credits on line ' + j + ': ' + val);
+          console.log('Found remaining credits: ' + val);
           return val;
-        }
-        // Also handle format like "18135" directly on same line
-        const match = next.match(/^[\d,]+/);
-        if (match) {
-          const val = parseInt(match[0].replace(/,/g, ''));
-          if (val > 100) {
-            console.log('Fallback credits on line ' + j + ': ' + val);
-            return val;
-          }
         }
       }
     }
   }
 
-  throw new Error('Could not find credit balance. Try running with HEADLESS=false to inspect the page.');
+  // Fallback: look for Credits label then number on next line (membership page)
+  let creditsCount = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim().toLowerCase() === 'credits') {
+      creditsCount++;
+      if (creditsCount < 2) continue;
+      for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+        const next = lines[j].trim();
+        if (/^\d[\d,]*$/.test(next)) {
+          const val = parseInt(next.replace(/,/g, ''));
+          console.log('Found credits on membership page: ' + val);
+          return val;
+        }
+      }
+    }
+  }
+
+  // Last resort: largest 4+ digit number on page
+  const allNumbers = bodyText.match(/\b\d{4,}\b/g);
+  if (allNumbers) {
+    const vals = allNumbers.map(n => parseInt(n)).filter(n => n < 1000000);
+    if (vals.length > 0) {
+      const max = Math.max(...vals);
+      console.log('Last resort credit value: ' + max);
+      return max;
+    }
+  }
+
+  throw new Error('Could not find credit balance.');
 }
 
 async function sendSlackUpdate(credits) {
@@ -276,17 +210,12 @@ async function sendSlackUpdate(credits) {
     hour: 'numeric', minute: '2-digit', hour12: true,
   });
 
-  // Icons and mentions per tier
-  // Under 2,000  → 🚨 @channel  "X credits remaining — action needed!"
-  // Under 5,000  → ⚠️ @here     "X credits remaining — running low"
-  // OK           → ✅ no ping   "OK"
   const icon = isUrgent ? ':rotating_light:' : isWarning ? ':warning:' : ':white_check_mark:';
   const mention = isUrgent ? '<!channel> ' : isWarning ? '<!here> ' : '';
-
   const statusText = isUrgent
-    ? credits.toLocaleString() + ' credits remaining — action needed!'
+    ? credits.toLocaleString() + ' credits remaining - action needed!'
     : isWarning
-    ? credits.toLocaleString() + ' credits remaining — running low'
+    ? credits.toLocaleString() + ' credits remaining - running low'
     : 'OK';
 
   const payload = {
@@ -325,22 +254,15 @@ async function sendSlackUpdate(credits) {
     throw new Error('Slack webhook failed: ' + response.status + ' ' + response.statusText);
   }
 
-  console.log('Slack update sent successfully!');
+  console.log('Slack update sent!');
 }
 
 (async () => {
   try {
     const credits = await checkKlingCredits();
 
-    if (credits <= CONFIG.threshold) {
-      console.log('Credits low: ' + credits + ' (threshold: ' + CONFIG.threshold + ')');
-    } else {
-      console.log('Credits OK: ' + credits + ' (threshold: ' + CONFIG.threshold + ')');
-    }
-
-    // In hourly mode, only post to Slack if credits are below the hourly threshold
     if (CONFIG.hourlyMode && credits >= CONFIG.hourlyThreshold) {
-      console.log('Hourly mode: credits are healthy (' + credits + ' >= ' + CONFIG.hourlyThreshold + '), skipping Slack update.');
+      console.log('Hourly mode: credits healthy (' + credits + '), skipping Slack.');
       return;
     }
 
@@ -348,17 +270,13 @@ async function sendSlackUpdate(credits) {
 
   } catch (err) {
     console.error('Error: ' + err.message);
-
     if (CONFIG.slackWebhookUrl) {
       await fetch(CONFIG.slackWebhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: 'Kling.ai credit monitor failed to run: ' + err.message,
-        }),
+        body: JSON.stringify({ text: 'Kling.ai credit monitor failed: ' + err.message }),
       }).catch(() => {});
     }
-
     process.exit(1);
   }
 })();
