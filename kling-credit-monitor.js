@@ -164,31 +164,22 @@ async function scrapeCredits(page) {
     }
   }
 
-  // Strategy 3: "Credits" label then number on next line (membership/plans page)
-  let creditsCount = 0;
+  // Strategy 3: "Credits" label then number on VERY NEXT non-empty line
+  // Page structure: line N = "Credits", line N+1 = "3" (the balance)
+  // We want the FIRST "Credits" occurrence that is followed immediately by a standalone number
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].trim().toLowerCase() === 'credits') {
-      creditsCount++;
-      if (creditsCount < 2) continue;
-      for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+      for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
         const next = lines[j].trim();
+        // Must be a standalone number (no other text), any size
         if (/^\d[\d,]*$/.test(next)) {
           const val = parseInt(next.replace(/,/g, ''));
-          console.log('Found credits on membership page: ' + val);
+          console.log('Found credits after Credits label: ' + val);
           return val;
         }
+        // Stop looking if we hit non-numeric content
+        if (next.length > 0 && !/^\d/.test(next)) break;
       }
-    }
-  }
-
-  // Strategy 4: largest 4+ digit number that isn't a year or price
-  const allNumbers = bodyText.match(/\b\d{4,}\b/g);
-  if (allNumbers) {
-    const vals = allNumbers.map(n => parseInt(n)).filter(n => n > 100 && n < 500000 && n !== 2026 && n !== 2025);
-    if (vals.length > 0) {
-      const max = Math.max(...vals);
-      console.log('Last resort credit value: ' + max);
-      return max;
     }
   }
 
