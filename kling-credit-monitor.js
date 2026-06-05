@@ -97,64 +97,20 @@ async function checkKlingCredits() {
     await page.waitForTimeout(5000);
     await page.screenshot({ path: 'ss8-after-login.png' });
 
-    // Step 7: Wait for the credit counter to appear in the sidebar after login
-    // It briefly shows "Sign In" then switches to the credit number (e.g. "1.8k")
-    // Wait up to 15 seconds for the credit number to appear
-    console.log('Waiting for credit counter to appear in sidebar...');
+    // Step 7: Navigate directly to the Credits tab on the membership page
+    console.log('Navigating to credits page...');
+    await page.goto('https://kling.ai/app/membership', { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(3000);
+    await page.screenshot({ path: 'ss9-membership-page.png' });
+
+    // Click the "Credits" tab to see the credit balance
     try {
-      await page.waitForFunction(() => {
-        // Look for any element in the sidebar that contains a number (credit count)
-        // It appears as "1.8k" or "1,800" near the bottom left
-        const allEls = [...document.querySelectorAll('*')];
-        return allEls.some(el => {
-          const text = el.innerText || '';
-          return /^\d+\.?\d*k?$/.test(text.trim()) && el.offsetParent !== null;
-        });
-      }, { timeout: 15000 });
-      console.log('Credit counter appeared');
-    } catch {
-      console.log('Credit counter wait timed out, proceeding anyway...');
-    }
-    await page.waitForTimeout(1000);
-    await page.screenshot({ path: 'ss9-looking-for-credits.png' });
-
-    // The credit counter is near the bottom of the left sidebar
-    // Try clicking the element that contains the credit number
-    let creditClicked = false;
-
-    // Try finding by the green coin icon area at bottom of sidebar
-    const creditSelectors = [
-      // Look for elements containing numbers like "1.8k" or "1,800" near bottom of sidebar
-      '[class*="user-info"]',
-      '[class*="userInfo"]',
-      '[class*="member-info"]',
-      '[class*="credit-num"]',
-      '[class*="creditNum"]',
-      '[class*="coin-num"]',
-      'span[class*="num"]',
-    ];
-
-    for (const sel of creditSelectors) {
-      try {
-        await page.click(sel, { timeout: 2000 });
-        console.log('Clicked credit selector: ' + sel);
-        creditClicked = true;
-        await page.waitForTimeout(2000);
-        await page.screenshot({ path: 'ss10-after-credit-click.png' });
-        break;
-      } catch { continue; }
-    }
-
-    if (!creditClicked) {
-      // Fallback: click the bottom-left area of the sidebar where the credit number appears
-      // Based on screenshots the credit counter is at approximately x=35, y=810 on a 1280px wide page
-      console.log('Trying coordinate click on credit counter...');
-      await page.mouse.click(35, 810);
+      await page.click('text="Credits"', { timeout: 5000 });
+      console.log('Clicked Credits tab');
       await page.waitForTimeout(2000);
-      await page.screenshot({ path: 'ss10-after-coord-click.png' });
+    } catch {
+      console.log('No Credits tab found, reading from current page...');
     }
-
-    await page.waitForTimeout(1000);
     await page.screenshot({ path: 'ss10-credits-page.png' });
 
     const credits = await scrapeCredits(page);
@@ -177,7 +133,7 @@ async function scrapeCredits(page) {
   lines.slice(0, 40).forEach((l, i) => { if (l.trim()) console.log(i + ': ' + l.trim()); });
   console.log('--- End sample ---');
 
-  // Look for "Remaining Credits" label followed by a number (from the credit details modal)
+  // Strategy 1: "Remaining Credits" label (from credit details modal)
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].trim().toLowerCase().includes('remaining credits')) {
       for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
@@ -191,7 +147,24 @@ async function scrapeCredits(page) {
     }
   }
 
-  // Fallback: look for Credits label then number on next line (membership page)
+  // Strategy 2: Credits tab page — shows "Total Credits" or "Available" near the top
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim().toLowerCase();
+    if (line.includes('total') || line.includes('available') || line.includes('balance')) {
+      for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+        const next = lines[j].trim();
+        if (/^\d[\d,]*$/.test(next)) {
+          const val = parseInt(next.replace(/,/g, ''));
+          if (val > 0) {
+            console.log('Found credits via total/available: ' + val);
+            return val;
+          }
+        }
+      }
+    }
+  }
+
+  // Strategy 3: "Credits" label then number on next line (membership/plans page)
   let creditsCount = 0;
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].trim().toLowerCase() === 'credits') {
@@ -208,10 +181,10 @@ async function scrapeCredits(page) {
     }
   }
 
-  // Last resort: largest 4+ digit number on page
+  // Strategy 4: largest 4+ digit number that isn't a year or price
   const allNumbers = bodyText.match(/\b\d{4,}\b/g);
   if (allNumbers) {
-    const vals = allNumbers.map(n => parseInt(n)).filter(n => n < 1000000);
+    const vals = allNumbers.map(n => parseInt(n)).filter(n => n > 100 && n < 500000 && n !== 2026 && n !== 2025);
     if (vals.length > 0) {
       const max = Math.max(...vals);
       console.log('Last resort credit value: ' + max);
