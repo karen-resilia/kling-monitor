@@ -1,5 +1,5 @@
 name: Kling Credit Monitor
- 
+
 on:
   workflow_dispatch:
     inputs:
@@ -7,28 +7,28 @@ on:
         description: 'Set to true for hourly check (only posts if credits < 8000)'
         required: false
         default: 'false'
- 
+
 jobs:
   check-credits:
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
- 
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
- 
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
- 
+
       - name: Install dependencies
         run: npm install
- 
+
       - name: Install Playwright browser
         run: npx playwright install chromium --with-deps
- 
+
       - name: Run credit monitor
         env:
           KLING_EMAIL: ${{ secrets.KLING_EMAIL }}
@@ -41,3 +41,11 @@ jobs:
           TEAM_NAME: 'the team'
           HEADLESS: 'true'
         run: node kling-credit-monitor.js
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: "*.png"
+          if-no-files-found: ignore
