@@ -128,40 +128,33 @@ async function login(page, email, password) {
     await page.click('button:has-text("Join Now!"), a:has-text("Join Now!")');
     await page.waitForTimeout(4000);
 
-    // Log what's visible after clicking Join Now
-    const afterJoin = await page.evaluate(() => {
-      const els = [...document.querySelectorAll('a, button, input')];
-      return els.map(e => (e.innerText || e.type || '').trim()).filter(t => t.length > 0).slice(0, 20).join(' | ');
-    });
-    console.log('After Join Now click: ' + afterJoin);
-
-    // Check if login modal is now open
-    const emailInput = await page.$('input[type="email"], input[name="email"]').then(el => !!el).catch(() => false);
-    const signInWithEmail = await page.$('text="Sign in with email"').then(el => !!el).catch(() => false);
-
-    if (emailInput) {
-      console.log('Login modal open with email input, filling credentials...');
-      await page.fill('input[type="email"], input[name="email"]', email);
-      await page.waitForTimeout(500);
-      await page.fill('input[type="password"], input[name="password"]', password);
-      await page.waitForTimeout(500);
-      await page.click('button[type="submit"], button:has-text("Sign In"), button:has-text("Login"), button:has-text("Continue")');
-      await page.waitForTimeout(5000);
-      await page.waitForLoadState('domcontentloaded');
-      return;
-    } else if (signInWithEmail) {
-      console.log('Login modal open, clicking Sign in with email...');
-      await page.click('text="Sign in with email"');
+    // Login form is now open — click "Sign in with email" if present, then fill credentials
+    try {
+      await page.click('text="Sign in with email"', { timeout: 3000 });
+      console.log('Clicked Sign in with email');
       await page.waitForTimeout(1500);
-      await page.fill('input[type="email"], input[name="email"]', email);
-      await page.waitForTimeout(500);
-      await page.fill('input[type="password"], input[name="password"]', password);
-      await page.waitForTimeout(500);
-      await page.click('button[type="submit"], button:has-text("Sign In"), button:has-text("Login"), button:has-text("Continue")');
-      await page.waitForTimeout(5000);
-      await page.waitForLoadState('domcontentloaded');
-      return;
+    } catch {
+      console.log('No Sign in with email button, trying direct fill...');
     }
+
+    // Fill credentials directly into whatever inputs are visible
+    try {
+      await page.fill('input[type="email"], input[name="email"]', email);
+      console.log('Filled email');
+    } catch {
+      // Try filling the first text input as email
+      await page.fill('input[type="text"]', email);
+      console.log('Filled text input as email');
+    }
+    await page.waitForTimeout(500);
+    await page.fill('input[type="password"]', password);
+    console.log('Filled password');
+    await page.waitForTimeout(500);
+    await page.click('button[type="submit"]');
+    console.log('Clicked submit');
+    await page.waitForTimeout(5000);
+    await page.waitForLoadState('domcontentloaded');
+    return;
   }
 
   // Step 2: Wait for secondary popup to auto-dismiss
