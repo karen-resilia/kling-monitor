@@ -126,7 +126,14 @@ async function login(page, email, password) {
   if (joinNowVisible) {
     console.log('Clicking Join Now to open login modal...');
     await page.click('button:has-text("Join Now!"), a:has-text("Join Now!")');
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(4000);
+
+    // Log what's visible after clicking Join Now
+    const afterJoin = await page.evaluate(() => {
+      const els = [...document.querySelectorAll('a, button, input')];
+      return els.map(e => (e.innerText || e.type || '').trim()).filter(t => t.length > 0).slice(0, 20).join(' | ');
+    });
+    console.log('After Join Now click: ' + afterJoin);
 
     // Check if login modal is now open
     const emailInput = await page.$('input[type="email"], input[name="email"]').then(el => !!el).catch(() => false);
