@@ -76,25 +76,23 @@ async function checkKlingCredits() {
       console.log('No Sign In sidebar link');
     }
 
-    // Step 5: Click "Sign in with email"
-    try {
-      await page.click('text="Sign in with email"', { timeout: 3000 });
-      console.log('Clicked Sign in with email');
-      await page.waitForTimeout(1500);
-      await page.screenshot({ path: 'ss6-after-emailoption.png' });
-    } catch {
-      console.log('No Sign in with email option');
-    }
+    // Step 5: Click "Sign in with email" and WAIT for the form to appear
+    await page.click('text="Sign in with email"', { timeout: 10000 });
+    console.log('Clicked Sign in with email');
+    // Wait for the email input to actually appear
+    await page.waitForSelector('input[placeholder="Enter Email Address"], input[type="email"]', { timeout: 10000 });
+    console.log('Email input appeared');
+    await page.screenshot({ path: 'ss6-email-form.png' });
 
     // Step 6: Fill credentials
-    await page.screenshot({ path: 'ss7-before-fill.png' });
-    await page.fill('input[placeholder="Enter Email Address"], input[type="email"], input[name="email"]', CONFIG.klingEmail);
+    await page.fill('input[placeholder="Enter Email Address"], input[type="email"]', CONFIG.klingEmail);
     console.log('Filled email');
     await page.waitForTimeout(500);
     await page.fill('input[placeholder="Password"], input[type="password"]', CONFIG.klingPassword);
     console.log('Filled password');
+    await page.screenshot({ path: 'ss7-filled.png' });
     await page.waitForTimeout(500);
-    await page.click('button:has-text("Sign In"):not(:has-text("with")), button[type="submit"]');
+    await page.click('button:has-text("Sign In"):not(:has-text("with")):not(:has-text("Google")):not(:has-text("Apple")), button[type="submit"]');
     console.log('Clicked Sign In button');
     await page.waitForTimeout(5000);
     await page.screenshot({ path: 'ss8-after-login.png' });
