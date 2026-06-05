@@ -137,23 +137,9 @@ async function login(page, email, password) {
       console.log('No Sign in with email button, trying direct fill...');
     }
 
-    // Fill credentials directly into whatever inputs are visible
-    try {
-      await page.fill('input[type="email"], input[name="email"]', email);
-      console.log('Filled email');
-    } catch {
-      // Try filling the first text input as email
-      await page.fill('input[type="text"]', email);
-      console.log('Filled text input as email');
-    }
-    await page.waitForTimeout(500);
-    await page.fill('input[type="password"]', password);
-    console.log('Filled password');
-    await page.waitForTimeout(500);
-    await page.click('button[type="submit"]');
-    console.log('Clicked submit');
-    await page.waitForTimeout(5000);
-    await page.waitForLoadState('domcontentloaded');
+    // Take a screenshot so we can see what the login modal looks like
+    await page.screenshot({ path: 'screenshot-after-joinnow.png', fullPage: true });
+    console.log('Screenshot saved: screenshot-after-joinnow.png');
     return;
   }
 
