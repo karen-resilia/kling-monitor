@@ -101,15 +101,8 @@ async function login(page, email, password) {
   });
   console.log('Clickable elements: ' + allText);
 
-  // Step 1: Dismiss the anniversary popup by clicking its X button
-  // The X is in the top-right corner of the popup at roughly (908, 54)
-  try {
-    await page.mouse.click(908, 54);
-    console.log('Clicked anniversary popup X button');
-    await page.waitForTimeout(1000);
-  } catch { /* ignore */ }
-
-  // Also try selector-based close in case coordinates shift
+  // Step 1: Dismiss anniversary popup
+  // Try selector-based close first
   const popupDismissSelectors = [
     '[aria-label="Close"]',
     '[aria-label="close"]',
@@ -123,10 +116,48 @@ async function login(page, email, password) {
       await page.click(sel, { timeout: 2000 });
       console.log('Dismissed popup with selector: ' + sel);
       await page.waitForTimeout(500);
+      break;
     } catch { continue; }
   }
 
-  // Step 2: Wait for the secondary "Sign in to Obtain" popup to auto-dismiss (it disappears after ~5s)
+  // If "Join Now!" is still visible, click it — on an unauthenticated browser
+  // it opens the login modal directly, which is exactly what we need
+  const joinNowVisible = await page.$('button:has-text("Join Now!"), a:has-text("Join Now!")').then(el => !!el).catch(() => false);
+  if (joinNowVisible) {
+    console.log('Clicking Join Now to open login modal...');
+    await page.click('button:has-text("Join Now!"), a:has-text("Join Now!")');
+    await page.waitForTimeout(2000);
+
+    // Check if login modal is now open
+    const emailInput = await page.$('input[type="email"], input[name="email"]').then(el => !!el).catch(() => false);
+    const signInWithEmail = await page.$('text="Sign in with email"').then(el => !!el).catch(() => false);
+
+    if (emailInput) {
+      console.log('Login modal open with email input, filling credentials...');
+      await page.fill('input[type="email"], input[name="email"]', email);
+      await page.waitForTimeout(500);
+      await page.fill('input[type="password"], input[name="password"]', password);
+      await page.waitForTimeout(500);
+      await page.click('button[type="submit"], button:has-text("Sign In"), button:has-text("Login"), button:has-text("Continue")');
+      await page.waitForTimeout(5000);
+      await page.waitForLoadState('domcontentloaded');
+      return;
+    } else if (signInWithEmail) {
+      console.log('Login modal open, clicking Sign in with email...');
+      await page.click('text="Sign in with email"');
+      await page.waitForTimeout(1500);
+      await page.fill('input[type="email"], input[name="email"]', email);
+      await page.waitForTimeout(500);
+      await page.fill('input[type="password"], input[name="password"]', password);
+      await page.waitForTimeout(500);
+      await page.click('button[type="submit"], button:has-text("Sign In"), button:has-text("Login"), button:has-text("Continue")');
+      await page.waitForTimeout(5000);
+      await page.waitForLoadState('domcontentloaded');
+      return;
+    }
+  }
+
+  // Step 2: Wait for secondary popup to auto-dismiss
   console.log('Waiting for secondary popup to auto-dismiss...');
   await page.waitForTimeout(6000);
 
