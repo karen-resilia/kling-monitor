@@ -32,7 +32,6 @@ async function checkKlingCredits() {
   try {
     await page.goto('https://kling.ai/app', { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(3000);
-    await page.screenshot({ path: 'ss1-initial.png' });
     console.log('Page title: ' + await page.title());
 
     // Step 1: Close the anniversary popup by clicking its X button
@@ -44,14 +43,12 @@ async function checkKlingCredits() {
       console.log('No close selector found, trying Join Now...');
     }
     await page.waitForTimeout(1000);
-    await page.screenshot({ path: 'ss2-after-close.png' });
 
     // Step 2: If Join Now is visible, click it to open the login modal
     try {
       await page.click('button:has-text("Join Now!"), a:has-text("Join Now!")', { timeout: 3000 });
       console.log('Clicked Join Now');
       await page.waitForTimeout(3000);
-      await page.screenshot({ path: 'ss3-after-joinnow.png' });
     } catch {
       console.log('No Join Now button');
     }
@@ -61,7 +58,6 @@ async function checkKlingCredits() {
       await page.click('button:has-text("Sign In to Claim Gift"), a:has-text("Sign In to Claim Gift")', { timeout: 3000 });
       console.log('Clicked Sign In to Claim Gift');
       await page.waitForTimeout(2000);
-      await page.screenshot({ path: 'ss4-after-claimgift.png' });
     } catch {
       console.log('No Sign In to Claim Gift');
     }
@@ -71,7 +67,6 @@ async function checkKlingCredits() {
       await page.click('text="Sign In"', { timeout: 3000 });
       console.log('Clicked Sign In sidebar');
       await page.waitForTimeout(2000);
-      await page.screenshot({ path: 'ss5-after-signin.png' });
     } catch {
       console.log('No Sign In sidebar link');
     }
@@ -82,7 +77,6 @@ async function checkKlingCredits() {
     // Wait for the email input to actually appear
     await page.waitForSelector('input[placeholder="Enter Email Address"], input[type="email"]', { timeout: 10000 });
     console.log('Email input appeared');
-    await page.screenshot({ path: 'ss6-email-form.png' });
 
     // Step 6: Fill credentials
     await page.fill('input[placeholder="Enter Email Address"], input[type="email"]', CONFIG.klingEmail);
@@ -90,18 +84,15 @@ async function checkKlingCredits() {
     await page.waitForTimeout(500);
     await page.fill('input[placeholder="Password"], input[type="password"]', CONFIG.klingPassword);
     console.log('Filled password');
-    await page.screenshot({ path: 'ss7-filled.png' });
     await page.waitForTimeout(500);
     await page.click('button:has-text("Sign In"):not(:has-text("with")):not(:has-text("Google")):not(:has-text("Apple")), button[type="submit"]');
     console.log('Clicked Sign In button');
     await page.waitForTimeout(5000);
-    await page.screenshot({ path: 'ss8-after-login.png' });
 
     // Step 7: Navigate directly to the Credits tab on the membership page
     console.log('Navigating to credits page...');
     await page.goto('https://kling.ai/app/membership', { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(3000);
-    await page.screenshot({ path: 'ss9-membership-page.png' });
 
     // Click the "Credits" tab to see the credit balance
     try {
@@ -111,7 +102,6 @@ async function checkKlingCredits() {
     } catch {
       console.log('No Credits tab found, reading from current page...');
     }
-    await page.screenshot({ path: 'ss10-credits-page.png' });
 
     const credits = await scrapeCredits(page);
     console.log('Credits found: ' + credits);
