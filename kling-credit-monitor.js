@@ -32,46 +32,45 @@ async function checkKlingCredits() {
   try {
     await page.goto('https://kling.ai/app', { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(3000);
+    await page.screenshot({ path: 'ss1-initial.png' });
     console.log('Page title: ' + await page.title());
 
-    // Step 1: Close the anniversary popup by clicking its X button
-    try {
-      // The X button is inside the anniversary popup modal
-      await page.click('.modal-close, [class*="modal"] button[class*="close"], button[class*="close"]:visible', { timeout: 3000 });
-      console.log('Closed popup via selector');
-    } catch {
-      console.log('No close selector found, trying Join Now...');
-    }
-    await page.waitForTimeout(1000);
+    // Try every possible login entry point in order of likelihood
+    // Each attempt is independent — if one works we move on
+    const loginEntryPoints = [
+      'button:has-text("Sign In to Claim Gift")',
+      'a:has-text("Sign In to Claim Gift")',
+      'button:has-text("Join Now!")',
+      'a:has-text("Join Now!")',
+      'text="Sign In"',
+      'text="Sign in"',
+      'button:has-text("Sign In")',
+      'a[href*="login"]',
+    ];
 
-    // Step 2: If Join Now is visible, click it to open the login modal
-    try {
-      await page.click('button:has-text("Join Now!"), a:has-text("Join Now!")', { timeout: 3000 });
-      console.log('Clicked Join Now');
-      await page.waitForTimeout(3000);
-    } catch {
-      console.log('No Join Now button');
-    }
-
-    // Step 3: If "Sign In to Claim Gift" is visible, click it
-    try {
-      await page.click('button:has-text("Sign In to Claim Gift"), a:has-text("Sign In to Claim Gift")', { timeout: 3000 });
-      console.log('Clicked Sign In to Claim Gift');
-      await page.waitForTimeout(2000);
-    } catch {
-      console.log('No Sign In to Claim Gift');
+    let entryFound = false;
+    for (const sel of loginEntryPoints) {
+      try {
+        await page.click(sel, { timeout: 3000 });
+        console.log('Clicked login entry: ' + sel);
+        entryFound = true;
+        await page.waitForTimeout(2000);
+        await page.screenshot({ path: 'ss2-after-entry.png' });
+        break;
+      } catch { continue; }
     }
 
-    // Step 4: If Sign In sidebar link is visible, click it
-    try {
-      await page.click('text="Sign In"', { timeout: 3000 });
-      console.log('Clicked Sign In sidebar');
-      await page.waitForTimeout(2000);
-    } catch {
-      console.log('No Sign In sidebar link');
+    if (!entryFound) {
+      await page.screenshot({ path: 'ss2-no-entry-found.png' });
+      const els = await page.evaluate(() =>
+        [...document.querySelectorAll('a, button')].map(e => e.innerText.trim()).filter(t => t).slice(0, 30).join(' | ')
+      );
+      console.log('No login entry found. Clickable elements: ' + els);
+      throw new Error('Could not find any login entry point on the page');
     }
 
-    // Step 5: Click "Sign in with email" and WAIT for the form to appear
+    // Now we should be on the login modal — click "Sign in with email"
+    await page.screenshot({ path: 'ss3-before-email-click.png' });
     await page.click('text="Sign in with email"', { timeout: 10000 });
     console.log('Clicked Sign in with email');
     // Wait for the email input to actually appear
