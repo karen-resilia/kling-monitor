@@ -37,33 +37,28 @@ async function checkKlingCredits() {
 
     // Try every possible login entry point in order of likelihood
     // Each attempt is independent — if one works we move on
-    // First try to dismiss any anniversary/promo popup by clicking its X close button
-    const closeSelectors = [
-      'button:has-text("×")',
-      'button:has-text("✕")',
-      '[aria-label="Close"]',
-      '[aria-label="close"]',
-      'button[class*="close"]',
-      'button[class*="Close"]',
-    ];
-    for (const sel of closeSelectors) {
+    // Dismiss the 2nd Anniversary popup by clicking its X button at (795, 227)
+    // Try coordinate click first since CSS selectors aren't matching the X
+    try {
+      await page.mouse.click(795, 227);
+      console.log('Clicked X at (795, 227)');
+      await page.waitForTimeout(1000);
+    } catch { /* ignore */ }
+
+    // Also try Escape key
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(500);
+
+    // Also try any close button selectors as backup
+    for (const sel of ['button:has-text("×")', '[aria-label="Close"]', '[aria-label="close"]', 'button[class*="close"]']) {
       try {
-        await page.click(sel, { timeout: 2000 });
-        console.log('Dismissed popup with: ' + sel);
-        await page.waitForTimeout(1000);
+        await page.click(sel, { timeout: 1000 });
+        console.log('Closed with selector: ' + sel);
         break;
       } catch { continue; }
     }
 
-    // If a popup with X is visible, click it by finding the X button near the popup
-    // The 2nd Anniversary popup has an X at top-right of the modal
-    try {
-      // Find any visible circular close button
-      await page.click('button:near(:text("Anniversary")), button:near(:text("Buy Now"))', { timeout: 2000 });
-      console.log('Dismissed anniversary popup via proximity click');
-      await page.waitForTimeout(1000);
-    } catch { /* no anniversary popup */ }
-
+    await page.waitForTimeout(1000);
     await page.screenshot({ path: 'ss2-after-dismiss.png' });
 
     const loginEntryPoints = [
