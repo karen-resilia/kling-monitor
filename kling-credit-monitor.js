@@ -37,48 +37,30 @@ async function checkKlingCredits() {
 
     // Try every possible login entry point in order of likelihood
     // Each attempt is independent — if one works we move on
-    // Dump the HTML of any visible popup to find the exact close button element
-    const popupHtml = await page.evaluate(() => {
-      // Look for elements containing "Anniversary" text
-      const els = [...document.querySelectorAll('*')];
-      const popup = els.find(el => el.innerText && el.innerText.includes('Anniversary') && el.children.length > 0);
-      return popup ? popup.outerHTML.slice(0, 2000) : 'No popup found';
-    });
-    console.log('Popup HTML: ' + popupHtml.slice(0, 500));
+    // Set viewport to match the screenshots exactly
+    await page.setViewportSize({ width: 1280, height: 720 });
 
     // Try Escape key first
     await page.keyboard.press('Escape');
     await page.waitForTimeout(1000);
 
-    // Try every possible close button approach
-    const closeAttempts = [
-      // SVG close buttons (common in React apps)
-      'svg[data-testid="close"]',
-      'svg[class*="close"]',
-      'svg[class*="icon-close"]',
-      // Buttons with close-related classes
-      '[class*="closeBtn"]',
-      '[class*="close-btn"]',
-      '[class*="modal-close"]',
-      '[class*="popup-close"]',
-      '[class*="dialog-close"]',
-      // Any button that is a direct child of the popup
-      'button:has-text("×")',
-      'button:has-text("✕")',
-      'button:has-text("✖")',
-      '[aria-label="Close"]',
-      '[aria-label="close"]',
-      '[aria-label="关闭"]',
-    ];
-    for (const sel of closeAttempts) {
-      try {
-        await page.click(sel, { timeout: 1000 });
-        console.log('Closed popup with: ' + sel);
-        await page.waitForTimeout(1000);
-        break;
-      } catch { continue; }
-    }
-
+    // Use JavaScript to find and click ANY button that looks like a close button
+    const dismissed = await page.evaluate(() => {
+      // Get all buttons and find ones that are small and circular (likely close buttons)
+      const buttons = [...document.querySelectorAll('button, [role="button"]')];
+      for (const btn of buttons) {
+        const rect = btn.getBoundingClientRect();
+        const text = (btn.innerText || btn.textContent || '').trim();
+        const style = window.getComputedStyle(btn);
+        // A close button is typically small (under 50px), visible, and near the top of a modal
+        if (rect.width < 50 && rect.height < 50 && rect.width > 0 && rect.top > 0 && rect.top < 400) {
+          btn.click();
+          return 'Clicked button at ' + rect.left + ',' + rect.top + ' text: ' + text;
+        }
+      }
+      return 'No close button found via JS';
+    });
+    console.log('JS dismiss result: ' + dismissed);
     await page.waitForTimeout(1000);
     await page.screenshot({ path: 'ss2-after-dismiss.png' });
 
