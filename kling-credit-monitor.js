@@ -37,23 +37,44 @@ async function checkKlingCredits() {
 
     // Try every possible login entry point in order of likelihood
     // Each attempt is independent — if one works we move on
-    // Dismiss the 2nd Anniversary popup by clicking its X button at (795, 227)
-    // Try coordinate click first since CSS selectors aren't matching the X
-    try {
-      await page.mouse.click(795, 227);
-      console.log('Clicked X at (795, 227)');
-      await page.waitForTimeout(1000);
-    } catch { /* ignore */ }
+    // Dump the HTML of any visible popup to find the exact close button element
+    const popupHtml = await page.evaluate(() => {
+      // Look for elements containing "Anniversary" text
+      const els = [...document.querySelectorAll('*')];
+      const popup = els.find(el => el.innerText && el.innerText.includes('Anniversary') && el.children.length > 0);
+      return popup ? popup.outerHTML.slice(0, 2000) : 'No popup found';
+    });
+    console.log('Popup HTML: ' + popupHtml.slice(0, 500));
 
-    // Also try Escape key
+    // Try Escape key first
     await page.keyboard.press('Escape');
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(1000);
 
-    // Also try any close button selectors as backup
-    for (const sel of ['button:has-text("×")', '[aria-label="Close"]', '[aria-label="close"]', 'button[class*="close"]']) {
+    // Try every possible close button approach
+    const closeAttempts = [
+      // SVG close buttons (common in React apps)
+      'svg[data-testid="close"]',
+      'svg[class*="close"]',
+      'svg[class*="icon-close"]',
+      // Buttons with close-related classes
+      '[class*="closeBtn"]',
+      '[class*="close-btn"]',
+      '[class*="modal-close"]',
+      '[class*="popup-close"]',
+      '[class*="dialog-close"]',
+      // Any button that is a direct child of the popup
+      'button:has-text("×")',
+      'button:has-text("✕")',
+      'button:has-text("✖")',
+      '[aria-label="Close"]',
+      '[aria-label="close"]',
+      '[aria-label="关闭"]',
+    ];
+    for (const sel of closeAttempts) {
       try {
         await page.click(sel, { timeout: 1000 });
-        console.log('Closed with selector: ' + sel);
+        console.log('Closed popup with: ' + sel);
+        await page.waitForTimeout(1000);
         break;
       } catch { continue; }
     }
