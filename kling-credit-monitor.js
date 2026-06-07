@@ -259,61 +259,47 @@ async function checkKlingCredits() {
       console.log('Session active — skipping login flow.');
     }
 
-    // ── 4. Navigate directly to the Credits tab ────────────────────────────
-    // The /membership page always shows Plans (pricing) and fires a "Trial
-    // Package" modal. The user's actual credit balance lives at /user-center
-    // or is accessible via the Credits tab. We try the most direct URL first,
-    // then fall back to clicking the tab on the membership page.
-    console.log('Navigating to credits page...');
-
-    // Attempt A: direct user credit center URL
-    let onCreditsPage = false;
-    for (const url of [
-      'https://kling.ai/app/user-center?tab=credits',
-      'https://kling.ai/app/user-center',
-      'https://kling.ai/app/membership/credits',
-    ]) {
-      await page.goto(url, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(2500);
-      const bodyText = await page.evaluate(() => document.body.innerText);
-      if (bodyText.toLowerCase().includes('remaining credits') ||
-          bodyText.toLowerCase().includes('total credits') ||
-          bodyText.toLowerCase().includes('credits available')) {
-        console.log('Found credits page at: ' + url);
-        onCreditsPage = true;
-        break;
-      }
-    }
-
-    // Attempt B: membership page + click Credits tab
-    if (!onCreditsPage) {
-      await page.goto('https://kling.ai/app/membership', { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(3000);
-      await page.screenshot({ path: 'ss5-membership.png' });
-      // Dismiss the Trial Package modal before trying to click the tab
-      await dismissAllModals(page);
-      await page.waitForTimeout(800);
-
-      const creditsTabSelectors = [
-        'text="Credits"',
-        '[class*="tab"]:has-text("Credits")',
-        'button:has-text("Credits")',
-        'a:has-text("Credits")',
-      ];
-      for (const sel of creditsTabSelectors) {
-        try {
-          await page.click(sel, { timeout: 3000 });
-          console.log('Clicked Credits tab via: ' + sel);
-          await page.waitForTimeout(2000);
-          break;
-        } catch { continue; }
-      }
-    }
-
+    // ── 4. Go to /membership, dismiss the Trial Package modal, click Credits ─
+    // IMPORTANT: Do NOT navigate to unknown URLs (/user-center etc.) —
+    // Kling redirects those to a login page, destroying the session.
+    // Stick to /membership which is a known-good authenticated URL.
+    console.log('Navigating to /membership...');
+    await page.goto('https://kling.ai/app/membership', { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(3000);
     await page.screenshot({ path: 'ss5-membership.png' });
-    // Dismiss any lingering modal on the credits view
+
+    // The "Sign in to Obtain Trial Package" modal always appears on this page.
+    // Its X close button is consistently at the top-right of the modal (~1247, 50).
+    // Use a direct pixel click — most reliable against this specific modal.
+    console.log('Dismissing Trial Package modal...');
+    await page.mouse.click(1247, 50);
+    await page.waitForTimeout(800);
+
+    // Belt-and-suspenders: also run the full modal dismissal sweep
     await dismissAllModals(page);
     await page.waitForTimeout(500);
+
+    // Now click the Credits tab — should be unblocked
+    let creditsTabClicked = false;
+    const creditsTabSelectors = [
+      'text="Credits"',
+      '[class*="tab"]:has-text("Credits")',
+      'button:has-text("Credits")',
+      'a:has-text("Credits")',
+    ];
+    for (const sel of creditsTabSelectors) {
+      try {
+        await page.click(sel, { timeout: 4000 });
+        console.log('Clicked Credits tab via: ' + sel);
+        creditsTabClicked = true;
+        await page.waitForTimeout(2500);
+        break;
+      } catch { continue; }
+    }
+    if (!creditsTabClicked) {
+      console.log('WARNING: Could not click Credits tab — scraping current page content.');
+    }
+
     await page.screenshot({ path: 'ss6-credits-tab.png' });
 
     const credits = await scrapeCredits(page);
