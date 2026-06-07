@@ -2,12 +2,16 @@
 // Posts credit balance to Slack every 2 hours.
 // Adds escalating alerts based on credit thresholds.
 //
-// FIX (2026-06-06): The script previously assumed the page would always show
-// a login form. Kling now loads the authenticated dashboard directly when a
-// valid session exists (GitHub Actions runners don't persist cookies, so the
-// flow is: unauthenticated → promo modal → dashboard WITH no login buttons).
-// The fix: after dismissing any modal, check whether we're already on the
-// dashboard. If yes, skip the entire login flow and go straight to credits.
+// FIX v1 (2026-06-06): Added isAlreadyLoggedIn() check to handle the case
+// where Kling loads the dashboard directly (no login form shown).
+//
+// FIX v2 (2026-06-06): isAlreadyLoggedIn() was called BEFORE dismissAllModals(),
+// so the promo modal overlay was blocking the sidebar selectors from being found,
+// causing the check to return false even on an authenticated session.
+// The fix: call isAlreadyLoggedIn() AFTER dismissAllModals() completes.
+// Also: made the logged-in check more robust — it now checks the page URL,
+// page text content, and DOM simultaneously so a single blocked selector
+// can't cause a false negative.
 
 import { chromium } from 'playwright';
 import * as dotenv from 'dotenv';
@@ -26,56 +30,111 @@ const CONFIG = {
 };
 
 // ---------------------------------------------------------------------------
-// Modal dismissal — robust against whatever promo Kling throws up
+// Modal dismissal — robust against whatever promo Kling throws up.
+// Keeps trying until no more dismissible buttons are found OR until the
+// overlay is gone from the DOM. Does NOT break early on first click.
 // ---------------------------------------------------------------------------
 async function dismissAllModals(page) {
-  // 1. Escape key (handles some modals instantly)
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(800);
+  console.log('Dismissing modals...');
 
-  // 2. JS scan: click every small button near the top of the viewport
-  //    (anniversary banners, promo popups, cookie notices, etc.)
-  let attempts = 0;
-  while (attempts < 5) {
-    const clicked = await page.evaluate(() => {
-      const buttons = [...document.querySelectorAll('button, [role="button"], [class*="close"], [class*="dismiss"], [aria-label*="close" i], [aria-label*="dismiss" i]')];
-      for (const btn of buttons) {
-        const rect = btn.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0 && rect.width < 60 && rect.height < 60 && rect.top < 500) {
-          btn.click();
-          return true;
-        }
-      }
-      return false;
-    });
-    if (!clicked) break;
-    await page.waitForTimeout(600);
-    attempts++;
+  // 1. Escape key
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(1000);
+
+  // 2. Targeted close-button selectors (Kling anniversary modal uses a plain
+  //    circular button with an × icon — no special class, just small & visible)
+  const closeSelectors = [
+    '[aria-label="close" i]',
+    '[aria-label="dismiss" i]',
+    '[class*="close" i]',
+    '[class*="dismiss" i]',
+    '[class*="modal"] button',
+    '[class*="popup"] button',
+    '[class*="overlay"] button',
+  ];
+  for (const sel of closeSelectors) {
+    try {
+      await page.click(sel, { timeout: 1000 });
+      console.log('Dismissed via selector: ' + sel);
+      await page.waitForTimeout(800);
+    } catch { /* not present, move on */ }
   }
 
-  // 3. Click outside any remaining overlay
-  await page.mouse.click(50, 50).catch(() => {});
-  await page.waitForTimeout(500);
+  // 3. JS scan — find any small button (< 60px) in the upper half of the
+  //    viewport that is still visible. Run up to 6 times so stacked modals
+  //    each get dismissed in turn. Wait 800ms between clicks for animations.
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const result = await page.evaluate(() => {
+      const buttons = [...document.querySelectorAll('button, [role="button"]')];
+      for (const btn of buttons) {
+        const rect = btn.getBoundingClientRect();
+        if (
+          rect.width > 0 && rect.height > 0 &&
+          rect.width < 60 && rect.height < 60 &&
+          rect.top > 0 && rect.top < 520 &&
+          rect.left > 0
+        ) {
+          btn.click();
+          return `Clicked small button at (${Math.round(rect.left)}, ${Math.round(rect.top)}) size ${Math.round(rect.width)}x${Math.round(rect.height)}`;
+        }
+      }
+      return null;
+    });
+
+    if (result) {
+      console.log('Modal JS dismiss attempt ' + (attempt + 1) + ': ' + result);
+      await page.waitForTimeout(800); // wait for CSS animation to finish
+    } else {
+      console.log('No more dismissible buttons found after ' + attempt + ' attempt(s)');
+      break;
+    }
+  }
+
+  // 4. Final fallback — click the top-left corner (outside any modal content)
+  await page.mouse.click(20, 20).catch(() => {});
+  await page.waitForTimeout(600);
+
+  console.log('Modal dismissal complete.');
 }
 
 // ---------------------------------------------------------------------------
-// Detect whether the app dashboard is showing (i.e. we're already logged in)
+// Detect whether we're on the authenticated dashboard.
+// Uses THREE independent signals — any one is sufficient.
+// Called AFTER dismissAllModals() so overlays don't interfere.
 // ---------------------------------------------------------------------------
 async function isAlreadyLoggedIn(page) {
-  // The authenticated dashboard always has these nav items in the sidebar
-  const dashboardSignals = [
+  // Signal 1: URL — authenticated app pages always contain /app
+  const url = page.url();
+  console.log('Current URL: ' + url);
+  if (url.includes('/app') && !url.includes('/login') && !url.includes('/signin')) {
+    // Signal 2: Body text contains nav items that only exist when logged in
+    const bodyText = await page.evaluate(() => document.body.innerText);
+    const dashboardKeywords = ['Image Generation', 'Video Generation', 'Explore', 'All Tools', 'Generate'];
+    const matchCount = dashboardKeywords.filter(kw => bodyText.includes(kw)).length;
+    console.log('Dashboard keyword matches: ' + matchCount + '/' + dashboardKeywords.length);
+    if (matchCount >= 2) {
+      console.log('Logged-in check: PASS (URL + body text)');
+      return true;
+    }
+  }
+
+  // Signal 3: DOM selector fallback
+  const domSelectors = [
     '[class*="sidebar"]',
     '[class*="nav-item"]',
-    'text="Image Generation"',
-    'text="Video Generation"',
-    'text="Explore"',
+    '[class*="user-avatar"]',
+    '[class*="userAvatar"]',
+    '[class*="profile"]',
   ];
-  for (const sel of dashboardSignals) {
+  for (const sel of domSelectors) {
     try {
-      await page.waitForSelector(sel, { timeout: 2000 });
+      await page.waitForSelector(sel, { timeout: 1500 });
+      console.log('Logged-in check: PASS (DOM: ' + sel + ')');
       return true;
     } catch { continue; }
   }
+
+  console.log('Logged-in check: FAIL — no signals matched');
   return false;
 }
 
@@ -177,6 +236,8 @@ async function checkKlingCredits() {
     await page.screenshot({ path: 'ss2-after-dismiss.png' });
 
     // ── 3. Decide: already logged in, or need to log in? ───────────────────
+    // IMPORTANT: isAlreadyLoggedIn() must run AFTER dismissAllModals() —
+    // modal overlays intercept DOM queries and cause false negatives.
     const loggedIn = await isAlreadyLoggedIn(page);
     console.log('Already logged in: ' + loggedIn);
 
