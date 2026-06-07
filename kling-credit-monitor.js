@@ -31,8 +31,9 @@ const CONFIG = {
 
 // ---------------------------------------------------------------------------
 // Modal dismissal — robust against whatever promo Kling throws up.
-// Keeps trying until no more dismissible buttons are found OR until the
-// overlay is gone from the DOM. Does NOT break early on first click.
+// KEY: Uses dispatchEvent('click') not btn.click() — SVG-icon close buttons
+// absorb .click() calls on the SVG child, not the button parent. dispatchEvent
+// on the button element itself fires reliably regardless of icon children.
 // ---------------------------------------------------------------------------
 async function dismissAllModals(page) {
   console.log('Dismissing modals...');
@@ -41,58 +42,65 @@ async function dismissAllModals(page) {
   await page.keyboard.press('Escape');
   await page.waitForTimeout(1000);
 
-  // 2. Targeted close-button selectors (Kling anniversary modal uses a plain
-  //    circular button with an × icon — no special class, just small & visible)
+  // 2. Playwright direct click on common close-button patterns
   const closeSelectors = [
     '[aria-label="close" i]',
+    '[aria-label="Close" ]',
     '[aria-label="dismiss" i]',
-    '[class*="close" i]',
-    '[class*="dismiss" i]',
-    '[class*="modal"] button',
-    '[class*="popup"] button',
-    '[class*="overlay"] button',
+    '[class*="closeBtn"]',
+    '[class*="close-btn"]',
+    '[class*="closeButton"]',
+    '[class*="close_btn"]',
+    '[class*="modal-close"]',
+    '[class*="popup-close"]',
   ];
   for (const sel of closeSelectors) {
     try {
-      await page.click(sel, { timeout: 1000 });
-      console.log('Dismissed via selector: ' + sel);
+      await page.click(sel, { timeout: 800, force: true });
+      console.log('Closed via selector: ' + sel);
       await page.waitForTimeout(800);
-    } catch { /* not present, move on */ }
+    } catch { /* not present */ }
   }
 
-  // 3. JS scan — find any small button (< 60px) in the upper half of the
-  //    viewport that is still visible. Run up to 6 times so stacked modals
-  //    each get dismissed in turn. Wait 800ms between clicks for animations.
-  for (let attempt = 0; attempt < 6; attempt++) {
+  // 3. JS scan using dispatchEvent — works even when btn.click() is swallowed
+  //    by SVG icon children. Scans up to 8 times for stacked modals.
+  for (let attempt = 0; attempt < 8; attempt++) {
     const result = await page.evaluate(() => {
       const buttons = [...document.querySelectorAll('button, [role="button"]')];
       for (const btn of buttons) {
         const rect = btn.getBoundingClientRect();
         if (
           rect.width > 0 && rect.height > 0 &&
-          rect.width < 60 && rect.height < 60 &&
-          rect.top > 0 && rect.top < 520 &&
+          rect.width < 65 && rect.height < 65 &&
+          rect.top > 0 && rect.top < 550 &&
           rect.left > 0
         ) {
-          btn.click();
-          return `Clicked small button at (${Math.round(rect.left)}, ${Math.round(rect.top)}) size ${Math.round(rect.width)}x${Math.round(rect.height)}`;
+          // dispatchEvent is more reliable than .click() for buttons with SVG children
+          btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          return `dispatchEvent click at (${Math.round(rect.left)},${Math.round(rect.top)}) ${Math.round(rect.width)}x${Math.round(rect.height)}`;
         }
       }
       return null;
     });
 
     if (result) {
-      console.log('Modal JS dismiss attempt ' + (attempt + 1) + ': ' + result);
-      await page.waitForTimeout(800); // wait for CSS animation to finish
+      console.log('Modal dismiss attempt ' + (attempt + 1) + ': ' + result);
+      await page.waitForTimeout(900);
     } else {
-      console.log('No more dismissible buttons found after ' + attempt + ' attempt(s)');
+      console.log('No more dismissible buttons found after ' + attempt + ' attempt(s).');
       break;
     }
   }
 
-  // 4. Final fallback — click the top-left corner (outside any modal content)
-  await page.mouse.click(20, 20).catch(() => {});
-  await page.waitForTimeout(600);
+  // 4. Nuclear fallback — use Playwright mouse to click the exact pixel
+  //    coordinates of the Kling anniversary modal X button (793, 227).
+  //    This bypasses JS entirely and simulates a real mouse click.
+  await page.mouse.click(793, 227);
+  await page.waitForTimeout(700);
+
+  // 5. Click top-left corner to close any backdrop-click-dismissible overlays
+  await page.mouse.click(20, 20);
+  await page.waitForTimeout(500);
 
   console.log('Modal dismissal complete.');
 }
@@ -247,24 +255,42 @@ async function checkKlingCredits() {
       console.log('Session active — skipping login flow.');
     }
 
-    // ── 4. Go directly to the membership/credits page ──────────────────────
-    console.log('Navigating to credits page...');
-    await page.goto('https://kling.ai/app/membership', { waitUntil: 'domcontentloaded' });
+    // ── 4. Navigate directly to the Credits tab URL ────────────────────────
+    // The membership page loads the Plans tab by default and shows a
+    // "Sign in to Claim Gift / Trial Package" modal that blocks the Credits
+    // tab click. Going directly to the credits URL bypasses both issues.
+    console.log('Navigating to credits tab...');
+    await page.goto('https://kling.ai/app/membership?tab=credits', { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(3000);
     await page.screenshot({ path: 'ss5-membership.png' });
 
-    // Dismiss any modal that appeared on the membership page too
+    // Dismiss the "Sign in to Obtain Trial Package" modal and any other overlays
     await dismissAllModals(page);
+    await page.waitForTimeout(1000);
 
-    // ── 5. Click the "Credits" tab if present ──────────────────────────────
-    try {
-      await page.click('text="Credits"', { timeout: 5000 });
-      console.log('Clicked Credits tab');
-      await page.waitForTimeout(2000);
-      await page.screenshot({ path: 'ss6-credits-tab.png' });
-    } catch {
-      console.log('No Credits tab found — reading from current page...');
+    // Try clicking the Credits tab as a belt-and-suspenders fallback
+    // in case the ?tab= param didn't activate it
+    const creditsTabSelectors = [
+      'text="Credits"',
+      '[class*="tab"]:has-text("Credits")',
+      'button:has-text("Credits")',
+      'a:has-text("Credits")',
+    ];
+    let creditsTabClicked = false;
+    for (const sel of creditsTabSelectors) {
+      try {
+        await page.click(sel, { timeout: 3000 });
+        console.log('Clicked Credits tab via: ' + sel);
+        creditsTabClicked = true;
+        await page.waitForTimeout(2000);
+        break;
+      } catch { continue; }
     }
+    if (!creditsTabClicked) {
+      console.log('Credits tab click not needed or not found — proceeding with current page.');
+    }
+
+    await page.screenshot({ path: 'ss6-credits-tab.png' });
 
     const credits = await scrapeCredits(page);
     console.log('Credits found: ' + credits);
@@ -279,25 +305,25 @@ async function checkKlingCredits() {
 }
 
 // ---------------------------------------------------------------------------
-// Credit scraping — multiple fallback strategies
+// Credit scraping — multiple fallback strategies.
+// The Credits tab shows the user's actual balance, NOT plan pricing numbers.
+// We must avoid matching plan description numbers like "660 Credits per month",
+// "3000 Credits per month", pricing like "$269", or countdown timer digits.
 // ---------------------------------------------------------------------------
 async function scrapeCredits(page) {
   const bodyText = await page.evaluate(() => document.body.innerText);
-  const lines = bodyText.split('\n');
+  const lines = bodyText.split('\n').map(l => l.trim()).filter(l => l);
 
-  console.log('--- Page text sample (first 50 non-empty lines) ---');
-  lines
-    .slice(0, 80)
-    .forEach((l, i) => { if (l.trim()) console.log(i + ': ' + l.trim()); });
-  console.log('--- End sample ---');
+  console.log('--- Page text (all non-empty lines) ---');
+  lines.forEach((l, i) => console.log(i + ': ' + l));
+  console.log('--- End ---');
 
-  // Strategy 1: "Remaining Credits" label
+  // Strategy 1: "Remaining Credits" label — the most explicit signal
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim().toLowerCase().includes('remaining credits')) {
-      for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
-        const next = lines[j].trim();
-        if (/^\d[\d,]*$/.test(next)) {
-          const val = parseInt(next.replace(/,/g, ''));
+    if (lines[i].toLowerCase().includes('remaining credits')) {
+      for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+        if (/^\d[\d,]*$/.test(lines[j])) {
+          const val = parseInt(lines[j].replace(/,/g, ''));
           console.log('Strategy 1 — remaining credits: ' + val);
           return val;
         }
@@ -305,54 +331,71 @@ async function scrapeCredits(page) {
     }
   }
 
-  // Strategy 2: "Total Credits" / "Available" / "Balance" label
+  // Strategy 2: "Total Credits" or "Available Credits" label (Credits tab header)
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim().toLowerCase();
-    if (line.includes('total') || line.includes('available') || line.includes('balance')) {
-      for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
-        const next = lines[j].trim();
-        if (/^\d[\d,]*$/.test(next)) {
-          const val = parseInt(next.replace(/,/g, ''));
-          if (val > 0) {
-            console.log('Strategy 2 — total/available/balance: ' + val);
-            return val;
-          }
-        }
-      }
-    }
-  }
-
-  // Strategy 3: standalone "Credits" label followed immediately by a number
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim().toLowerCase() === 'credits') {
-      for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
-        const next = lines[j].trim();
-        if (/^\d[\d,]*$/.test(next)) {
-          const val = parseInt(next.replace(/,/g, ''));
-          console.log('Strategy 3 — credits label: ' + val);
+    const l = lines[i].toLowerCase();
+    if ((l.includes('total credits') || l.includes('available credits') || l.includes('credits available')) && !l.includes('per month')) {
+      for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+        if (/^\d[\d,]*$/.test(lines[j])) {
+          const val = parseInt(lines[j].replace(/,/g, ''));
+          console.log('Strategy 2 — total/available credits label: ' + val);
           return val;
         }
-        if (next.length > 0 && !/^\d/.test(next)) break;
       }
     }
   }
 
-  // Strategy 4: DOM query — look for elements that visually display the
-  // credit number (large standalone numbers adjacent to credit-related text)
+  // Strategy 3: standalone number that is NOT a plan tier amount or price.
+  // Plan tier amounts are always followed by "Credits per month" on the next line.
+  // Pricing numbers start with $ or appear in "/ Year" context.
+  // Countdown timers are small (2 digits). We want numbers > 2 digits that are
+  // NOT immediately followed by "Credits per month", "/ Year", "/ Month", etc.
+  const planTierAmounts = new Set(['660', '3000', '8000', '26000']); // known plan sizes
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\d[\d,]+$/.test(lines[i])) {
+      const val = parseInt(lines[i].replace(/,/g, ''));
+      const raw = lines[i].replace(/,/g, '');
+      // Skip plan tier sizes, tiny numbers (timer digits), and prices
+      if (planTierAmounts.has(raw)) continue;
+      if (val < 10) continue; // single/double digit = timer
+      // Skip if next line is a plan descriptor
+      const nextLine = (lines[i + 1] || '').toLowerCase();
+      if (nextLine.includes('per month') || nextLine.includes('/ year') || nextLine.includes('/year') || nextLine.includes('/ month')) continue;
+      // Skip if prev line is a price context
+      const prevLine = (lines[i - 1] || '').toLowerCase();
+      if (prevLine.includes('$') || prevLine.includes('year') || prevLine.includes('renewal')) continue;
+      console.log('Strategy 3 — standalone number (filtered): ' + val);
+      return val;
+    }
+  }
+
+  // Strategy 4: DOM — look for the credit balance element directly.
+  // On the Credits tab, the balance is typically in an element whose class
+  // contains "credit" and which holds a standalone number.
   const domCredit = await page.evaluate(() => {
-    const candidates = [...document.querySelectorAll('*')];
-    for (const el of candidates) {
+    // Look for elements with credit-related classes containing a pure number
+    const creditEls = [...document.querySelectorAll('[class*="credit" i], [class*="balance" i], [class*="remain" i]')];
+    for (const el of creditEls) {
       const text = (el.innerText || '').trim();
-      if (/^\d[\d,]{2,}$/.test(text)) { // 3+ digit number
-        // Check if a nearby ancestor/sibling mentions "credit"
-        const parent = el.closest('[class*="credit"], [class*="Credit"], [class*="balance"], [class*="Balance"]');
-        if (parent) return parseInt(text.replace(/,/g, ''));
+      if (/^\d[\d,]+$/.test(text)) {
+        const val = parseInt(text.replace(/,/g, ''));
+        if (val >= 10) return val; // skip timer digits
+      }
+    }
+    // Broader scan: any element whose ONLY content is a number ≥ 100
+    const all = [...document.querySelectorAll('span, p, div, h1, h2, h3')];
+    for (const el of all) {
+      if (el.children.length > 0) continue; // leaf nodes only
+      const text = (el.innerText || '').trim();
+      if (/^\d[\d,]+$/.test(text)) {
+        const val = parseInt(text.replace(/,/g, ''));
+        if (val >= 100 && val < 1000000) return val;
       }
     }
     return null;
   });
   if (domCredit !== null) {
-    console.log('Strategy 4 — DOM class heuristic: ' + domCredit);
+    console.log('Strategy 4 — DOM scan: ' + domCredit);
     return domCredit;
   }
 
