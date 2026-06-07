@@ -27,6 +27,10 @@ const CONFIG = {
   klingPassword: process.env.KLING_PASSWORD,
   headless: process.env.HEADLESS !== 'false',
   hourlyMode: process.env.HOURLY_MODE === 'true',
+  // Set DEBUG_SLACK_USER to a Slack user ID (e.g. "U012AB3CD") to send all
+  // alerts as a DM to that person only, bypassing the channel entirely.
+  // Remove or leave blank to resume normal channel posting.
+  debugSlackUser: process.env.DEBUG_SLACK_USER || '',
 };
 
 // ---------------------------------------------------------------------------
@@ -255,41 +259,61 @@ async function checkKlingCredits() {
       console.log('Session active — skipping login flow.');
     }
 
-    // ── 4. Navigate directly to the Credits tab URL ────────────────────────
-    // The membership page loads the Plans tab by default and shows a
-    // "Sign in to Claim Gift / Trial Package" modal that blocks the Credits
-    // tab click. Going directly to the credits URL bypasses both issues.
-    console.log('Navigating to credits tab...');
-    await page.goto('https://kling.ai/app/membership?tab=credits', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(3000);
-    await page.screenshot({ path: 'ss5-membership.png' });
+    // ── 4. Navigate directly to the Credits tab ────────────────────────────
+    // The /membership page always shows Plans (pricing) and fires a "Trial
+    // Package" modal. The user's actual credit balance lives at /user-center
+    // or is accessible via the Credits tab. We try the most direct URL first,
+    // then fall back to clicking the tab on the membership page.
+    console.log('Navigating to credits page...');
 
-    // Dismiss the "Sign in to Obtain Trial Package" modal and any other overlays
-    await dismissAllModals(page);
-    await page.waitForTimeout(1000);
-
-    // Try clicking the Credits tab as a belt-and-suspenders fallback
-    // in case the ?tab= param didn't activate it
-    const creditsTabSelectors = [
-      'text="Credits"',
-      '[class*="tab"]:has-text("Credits")',
-      'button:has-text("Credits")',
-      'a:has-text("Credits")',
-    ];
-    let creditsTabClicked = false;
-    for (const sel of creditsTabSelectors) {
-      try {
-        await page.click(sel, { timeout: 3000 });
-        console.log('Clicked Credits tab via: ' + sel);
-        creditsTabClicked = true;
-        await page.waitForTimeout(2000);
+    // Attempt A: direct user credit center URL
+    let onCreditsPage = false;
+    for (const url of [
+      'https://kling.ai/app/user-center?tab=credits',
+      'https://kling.ai/app/user-center',
+      'https://kling.ai/app/membership/credits',
+    ]) {
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(2500);
+      const bodyText = await page.evaluate(() => document.body.innerText);
+      if (bodyText.toLowerCase().includes('remaining credits') ||
+          bodyText.toLowerCase().includes('total credits') ||
+          bodyText.toLowerCase().includes('credits available')) {
+        console.log('Found credits page at: ' + url);
+        onCreditsPage = true;
         break;
-      } catch { continue; }
-    }
-    if (!creditsTabClicked) {
-      console.log('Credits tab click not needed or not found — proceeding with current page.');
+      }
     }
 
+    // Attempt B: membership page + click Credits tab
+    if (!onCreditsPage) {
+      await page.goto('https://kling.ai/app/membership', { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(3000);
+      await page.screenshot({ path: 'ss5-membership.png' });
+      // Dismiss the Trial Package modal before trying to click the tab
+      await dismissAllModals(page);
+      await page.waitForTimeout(800);
+
+      const creditsTabSelectors = [
+        'text="Credits"',
+        '[class*="tab"]:has-text("Credits")',
+        'button:has-text("Credits")',
+        'a:has-text("Credits")',
+      ];
+      for (const sel of creditsTabSelectors) {
+        try {
+          await page.click(sel, { timeout: 3000 });
+          console.log('Clicked Credits tab via: ' + sel);
+          await page.waitForTimeout(2000);
+          break;
+        } catch { continue; }
+      }
+    }
+
+    await page.screenshot({ path: 'ss5-membership.png' });
+    // Dismiss any lingering modal on the credits view
+    await dismissAllModals(page);
+    await page.waitForTimeout(500);
     await page.screenshot({ path: 'ss6-credits-tab.png' });
 
     const credits = await scrapeCredits(page);
@@ -306,9 +330,9 @@ async function checkKlingCredits() {
 
 // ---------------------------------------------------------------------------
 // Credit scraping — multiple fallback strategies.
-// The Credits tab shows the user's actual balance, NOT plan pricing numbers.
-// We must avoid matching plan description numbers like "660 Credits per month",
-// "3000 Credits per month", pricing like "$269", or countdown timer digits.
+// Known noise to ignore: countdown timer digits (06, 27, 35), plan tier sizes
+// (660, 3000, 8000, 26000, 30000), pricing ($72, $269), seat counts (3).
+// The real balance is a standalone number like 16000, 9500, etc.
 // ---------------------------------------------------------------------------
 async function scrapeCredits(page) {
   const bodyText = await page.evaluate(() => document.body.innerText);
@@ -317,6 +341,20 @@ async function scrapeCredits(page) {
   console.log('--- Page text (all non-empty lines) ---');
   lines.forEach((l, i) => console.log(i + ': ' + l));
   console.log('--- End ---');
+
+  // Strategy 0: inline pattern "16,000 Credits" or "16000 Credits" on one line
+  // This is how the Credits tab often renders the balance.
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^([\d,]+)\s+credits?$/i);
+    if (m) {
+      const val = parseInt(m[1].replace(/,/g, ''));
+      // Exclude known plan tier sizes
+      if (![660, 3000, 8000, 10000, 26000, 30000].includes(val)) {
+        console.log('Strategy 0 — inline "N Credits" pattern: ' + val);
+        return val;
+      }
+    }
+  }
 
   // Strategy 1: "Remaining Credits" label — the most explicit signal
   for (let i = 0; i < lines.length; i++) {
@@ -331,7 +369,7 @@ async function scrapeCredits(page) {
     }
   }
 
-  // Strategy 2: "Total Credits" or "Available Credits" label (Credits tab header)
+  // Strategy 2: "Total Credits" or "Available Credits" label
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i].toLowerCase();
     if ((l.includes('total credits') || l.includes('available credits') || l.includes('credits available')) && !l.includes('per month')) {
@@ -345,55 +383,50 @@ async function scrapeCredits(page) {
     }
   }
 
-  // Strategy 3: standalone number that is NOT a plan tier amount or price.
-  // Plan tier amounts are always followed by "Credits per month" on the next line.
-  // Pricing numbers start with $ or appear in "/ Year" context.
-  // Countdown timers are small (2 digits). We want numbers > 2 digits that are
-  // NOT immediately followed by "Credits per month", "/ Year", "/ Month", etc.
-  const planTierAmounts = new Set(['660', '3000', '8000', '26000']); // known plan sizes
+  // Strategy 3: standalone number filtered to exclude all known noise.
+  // Countdown timers are always ≤ 59. Plan tier sizes are a known set.
+  // Pricing lines have $ in adjacent lines. We want numbers ≥ 100 that
+  // don't match any noise pattern.
+  const knownPlanTiers = new Set([660, 3000, 8000, 10000, 26000, 30000]);
   for (let i = 0; i < lines.length; i++) {
     if (/^\d[\d,]+$/.test(lines[i])) {
       const val = parseInt(lines[i].replace(/,/g, ''));
-      const raw = lines[i].replace(/,/g, '');
-      // Skip plan tier sizes, tiny numbers (timer digits), and prices
-      if (planTierAmounts.has(raw)) continue;
-      if (val < 10) continue; // single/double digit = timer
-      // Skip if next line is a plan descriptor
+      if (val < 100) continue;                          // timers and tiny counts
+      if (knownPlanTiers.has(val)) continue;            // plan tier sizes
       const nextLine = (lines[i + 1] || '').toLowerCase();
-      if (nextLine.includes('per month') || nextLine.includes('/ year') || nextLine.includes('/year') || nextLine.includes('/ month')) continue;
-      // Skip if prev line is a price context
       const prevLine = (lines[i - 1] || '').toLowerCase();
-      if (prevLine.includes('$') || prevLine.includes('year') || prevLine.includes('renewal')) continue;
+      if (nextLine.includes('per month') || nextLine.includes('per year') ||
+          nextLine.includes('/ year') || nextLine.includes('team credits')) continue;
+      if (prevLine.includes('$') || prevLine.includes('renewal') ||
+          prevLine.includes('seat') || prevLine.includes('year')) continue;
       console.log('Strategy 3 — standalone number (filtered): ' + val);
       return val;
     }
   }
 
-  // Strategy 4: DOM — look for the credit balance element directly.
-  // On the Credits tab, the balance is typically in an element whose class
-  // contains "credit" and which holds a standalone number.
-  const domCredit = await page.evaluate(() => {
-    // Look for elements with credit-related classes containing a pure number
+  // Strategy 4: DOM — target leaf elements with credit-related classes,
+  // then fall back to any leaf number ≥ 100 not matching a plan tier size.
+  const domCredit = await page.evaluate((knownTiers) => {
     const creditEls = [...document.querySelectorAll('[class*="credit" i], [class*="balance" i], [class*="remain" i]')];
     for (const el of creditEls) {
       const text = (el.innerText || '').trim();
       if (/^\d[\d,]+$/.test(text)) {
         const val = parseInt(text.replace(/,/g, ''));
-        if (val >= 10) return val; // skip timer digits
+        if (val >= 100 && !knownTiers.includes(val)) return val;
       }
     }
-    // Broader scan: any element whose ONLY content is a number ≥ 100
     const all = [...document.querySelectorAll('span, p, div, h1, h2, h3')];
     for (const el of all) {
-      if (el.children.length > 0) continue; // leaf nodes only
+      if (el.children.length > 0) continue;
       const text = (el.innerText || '').trim();
       if (/^\d[\d,]+$/.test(text)) {
         const val = parseInt(text.replace(/,/g, ''));
-        if (val >= 100 && val < 1000000) return val;
+        if (val >= 100 && val < 1000000 && !knownTiers.includes(val)) return val;
       }
     }
     return null;
-  });
+  }, [660, 3000, 8000, 10000, 26000, 30000]);
+
   if (domCredit !== null) {
     console.log('Strategy 4 — DOM scan: ' + domCredit);
     return domCredit;
@@ -420,37 +453,49 @@ async function sendSlackUpdate(credits) {
   });
 
   const icon       = isUrgent ? ':rotating_light:' : isWarning ? ':warning:' : ':white_check_mark:';
-  const mention    = isUrgent ? '<!channel> '       : isWarning ? '<!here> '  : '';
+  // In debug mode: suppress @channel/@here mentions and add a debug label
+  const debugMode  = !!CONFIG.debugSlackUser;
+  const mention    = debugMode ? '' : (isUrgent ? '<!channel> ' : isWarning ? '<!here> ' : '');
+  const debugTag   = debugMode ? ' _(debug — channel suppressed)_' : '';
   const statusText = isUrgent
     ? credits.toLocaleString() + ' credits remaining - action needed!'
     : isWarning
     ? credits.toLocaleString() + ' credits remaining - running low'
     : 'OK';
 
+  const blocks = [
+    ...(debugMode ? [{
+      type: 'section',
+      text: { type: 'mrkdwn', text: ':construction: *Debug mode* — alerts are DM-only until scraper is verified.' + debugTag },
+    }] : []),
+    ...(isUrgent || isWarning ? [{
+      type: 'section',
+      text: { type: 'mrkdwn', text: mention + '*Kling.ai credits: ' + statusText + '*' },
+    }] : []),
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: '*Kling.ai credits*\n' + icon + ' *' + credits.toLocaleString() + '* - ' + statusText },
+        { type: 'mrkdwn', text: '*Checked at*\n' + now },
+      ],
+    },
+    ...(isUrgent || isWarning || isLow ? [{
+      type: 'actions',
+      elements: [{
+        type: 'button',
+        text: { type: 'plain_text', text: 'Top up credits' },
+        url: 'https://kling.ai/app/membership/membership-plan',
+        style: 'danger',
+      }],
+    }] : []),
+  ];
+
+  // If DEBUG_SLACK_USER is set, send as a DM to that user only.
+  // The webhook payload uses "channel" to override the webhook's default destination.
   const payload = {
-    text: mention + (isUrgent ? 'URGENT' : isWarning ? 'WARNING' : 'OK') + ' Kling.ai credits: ' + credits.toLocaleString(),
-    blocks: [
-      ...(isUrgent || isWarning ? [{
-        type: 'section',
-        text: { type: 'mrkdwn', text: mention + '*Kling.ai credits: ' + statusText + '*' },
-      }] : []),
-      {
-        type: 'section',
-        fields: [
-          { type: 'mrkdwn', text: '*Kling.ai credits*\n' + icon + ' *' + credits.toLocaleString() + '* - ' + statusText },
-          { type: 'mrkdwn', text: '*Checked at*\n' + now },
-        ],
-      },
-      ...(isUrgent || isWarning || isLow ? [{
-        type: 'actions',
-        elements: [{
-          type: 'button',
-          text: { type: 'plain_text', text: 'Top up credits' },
-          url: 'https://kling.ai/app/membership/membership-plan',
-          style: 'danger',
-        }],
-      }] : []),
-    ],
+    text: mention + (isUrgent ? 'URGENT' : isWarning ? 'WARNING' : 'OK') + ' Kling.ai credits: ' + credits.toLocaleString() + debugTag,
+    blocks,
+    ...(debugMode ? { channel: CONFIG.debugSlackUser } : {}),
   };
 
   const response = await fetch(CONFIG.slackWebhookUrl, {
@@ -463,7 +508,7 @@ async function sendSlackUpdate(credits) {
     throw new Error('Slack webhook failed: ' + response.status + ' ' + response.statusText);
   }
 
-  console.log('Slack update sent!');
+  console.log('Slack update sent!' + (debugMode ? ' (DM to ' + CONFIG.debugSlackUser + ')' : ''));
 }
 
 // ---------------------------------------------------------------------------
