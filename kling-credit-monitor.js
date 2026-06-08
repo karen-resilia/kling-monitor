@@ -235,7 +235,8 @@ async function performLogin(page) {
 }
 
 // ---------------------------------------------------------------------------
-// Main entry point
+// Main entry point — logs in, then intercepts the API call Kling's own
+// frontend makes to fetch credit balance. No tab-clicking, no scraping.
 // ---------------------------------------------------------------------------
 async function checkKlingCredits() {
   console.log('Checking Kling.ai credits...');
@@ -249,6 +250,41 @@ async function checkKlingCredits() {
   const page = await context.newPage();
   await page.setViewportSize({ width: 1280, height: 720 });
 
+  // ── Intercept every API response and look for credit data ─────────────────
+  let creditsFromApi = null;
+
+  context.on('response', async (response) => {
+    const url = response.url();
+    // Kling's API calls for membership/credits typically contain these patterns
+    if (
+      url.includes('klingai.com') || url.includes('kling.ai') ||
+      url.includes('kuaishou') || url.includes('kwai')
+    ) {
+      if (
+        url.includes('credit') || url.includes('member') ||
+        url.includes('account') || url.includes('user') ||
+        url.includes('balance') || url.includes('quota')
+      ) {
+        try {
+          const contentType = response.headers()['content-type'] || '';
+          if (contentType.includes('application/json')) {
+            const body = await response.json().catch(() => null);
+            if (body) {
+              console.log('API response from: ' + url);
+              console.log('API body: ' + JSON.stringify(body).slice(0, 400));
+              // Recursively search the response for credit-like numbers
+              const found = findCreditsInObject(body);
+              if (found !== null && creditsFromApi === null) {
+                console.log('Credits found in API response: ' + found);
+                creditsFromApi = found;
+              }
+            }
+          }
+        } catch { /* ignore parse errors */ }
+      }
+    }
+  });
+
   try {
     // ── 1. Land on the app ──────────────────────────────────────────────────
     await page.goto('https://kling.ai/app', { waitUntil: 'domcontentloaded' });
@@ -256,53 +292,37 @@ async function checkKlingCredits() {
     await page.screenshot({ path: 'ss1-initial.png' });
     console.log('Page title: ' + await page.title());
 
-    // ── 2. Dismiss any promotional / cookie modals ──────────────────────────
+    // ── 2. Dismiss modals ───────────────────────────────────────────────────
     await dismissAllModals(page);
     await page.screenshot({ path: 'ss2-after-dismiss.png' });
 
-    // ── 3. Decide: already logged in, or need to log in? ───────────────────
-    // IMPORTANT: isAlreadyLoggedIn() must run AFTER dismissAllModals() —
-    // modal overlays intercept DOM queries and cause false negatives.
+    // ── 3. Login if needed ──────────────────────────────────────────────────
     const loggedIn = await isAlreadyLoggedIn(page);
     console.log('Already logged in: ' + loggedIn);
-
     if (!loggedIn) {
       await performLogin(page);
     } else {
       console.log('Session active — skipping login flow.');
     }
 
-    // ── 4. Go to /membership, dismiss the Trial Package modal, click Credits ─
-    // IMPORTANT: Do NOT navigate to unknown URLs (/user-center etc.) —
-    // Kling redirects those to a login page, destroying the session.
-    // Stick to /membership which is a known-good authenticated URL.
-    console.log('Navigating to /membership...');
+    // ── 4. Navigate to membership page to trigger credit API calls ──────────
+    console.log('Navigating to /membership to trigger credit API calls...');
     await page.goto('https://kling.ai/app/membership', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(4000); // wait for API calls to complete
     await page.screenshot({ path: 'ss5-membership.png' });
 
-    // The "Sign in to Obtain Trial Package" modal always appears on this page.
-    console.log('Dismissing Trial Package modal...');
-    await dismissAllModals(page);
-    await page.waitForTimeout(500);
-
-    // Verify: log any remaining visible overlays so we can debug if needed
-    const surviving = await page.evaluate(() => {
-      return [...document.querySelectorAll('[class*="modal" i], [class*="overlay" i], [class*="popup" i], [role="dialog"]')]
-        .filter(el => {
-          const r = el.getBoundingClientRect();
-          const s = window.getComputedStyle(el);
-          return r.width > 100 && r.height > 50 && s.display !== 'none' && s.visibility !== 'hidden';
-        })
-        .map(el => el.className.slice(0, 80));
-    });
-    if (surviving.length > 0) {
-      console.log('WARNING: ' + surviving.length + ' overlay(s) still visible after dismissal: ' + surviving.join(' | '));
-    } else {
-      console.log('All overlays cleared.');
+    // ── 5. If API interception got credits, use them ────────────────────────
+    if (creditsFromApi !== null) {
+      console.log('Using credits from API interception: ' + creditsFromApi);
+      await browser.close();
+      return creditsFromApi;
     }
 
-    // Now click the Credits tab — should be unblocked
+    // ── 6. API didn't give us credits — try clicking the Credits tab ─────────
+    console.log('API interception did not find credits. Trying Credits tab...');
+    await dismissAllModals(page);
+
+    // Use force:true to click through any overlays that remain
     let creditsTabClicked = false;
     const creditsTabSelectors = [
       'text="Credits"',
@@ -312,21 +332,25 @@ async function checkKlingCredits() {
     ];
     for (const sel of creditsTabSelectors) {
       try {
-        await page.click(sel, { timeout: 4000 });
+        await page.click(sel, { timeout: 4000, force: true });
         console.log('Clicked Credits tab via: ' + sel);
         creditsTabClicked = true;
-        await page.waitForTimeout(2500);
+        await page.waitForTimeout(3000);
         break;
       } catch { continue; }
     }
-    if (!creditsTabClicked) {
-      console.log('WARNING: Could not click Credits tab — scraping current page content.');
+
+    // ── 7. If Credits tab click triggered API call, check again ─────────────
+    if (creditsFromApi !== null) {
+      console.log('Credits tab click triggered API: ' + creditsFromApi);
+      await browser.close();
+      return creditsFromApi;
     }
 
+    // ── 8. Last resort: scrape the page text ────────────────────────────────
     await page.screenshot({ path: 'ss6-credits-tab.png' });
-
     const credits = await scrapeCredits(page);
-    console.log('Credits found: ' + credits);
+    console.log('Credits found via scraping: ' + credits);
     await browser.close();
     return credits;
 
@@ -335,6 +359,44 @@ async function checkKlingCredits() {
     await browser.close();
     throw err;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Recursively search a JSON object for a credit balance value.
+// Looks for keys named "credit", "balance", "remaining", "quota" etc.
+// that have numeric values in a plausible range (100–10,000,000).
+// ---------------------------------------------------------------------------
+function findCreditsInObject(obj, depth = 0) {
+  if (depth > 8 || obj === null || typeof obj !== 'object') return null;
+
+  const creditKeys = ['credit', 'credits', 'balance', 'remaining', 'quota',
+                      'amount', 'total', 'available', 'coin', 'point'];
+
+  for (const key of Object.keys(obj)) {
+    const keyLower = key.toLowerCase();
+    const val = obj[key];
+
+    if (creditKeys.some(k => keyLower.includes(k))) {
+      if (typeof val === 'number' && val >= 100 && val <= 10000000) {
+        console.log('Credit key match: ' + key + ' = ' + val);
+        return Math.round(val);
+      }
+      if (typeof val === 'string' && /^\d+$/.test(val)) {
+        const n = parseInt(val);
+        if (n >= 100 && n <= 10000000) {
+          console.log('Credit key match (string): ' + key + ' = ' + n);
+          return n;
+        }
+      }
+    }
+
+    // Recurse into nested objects and arrays
+    if (typeof val === 'object' && val !== null) {
+      const found = findCreditsInObject(val, depth + 1);
+      if (found !== null) return found;
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
