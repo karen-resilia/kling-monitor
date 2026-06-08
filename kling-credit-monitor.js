@@ -235,8 +235,8 @@ async function performLogin(page) {
 }
 
 // ---------------------------------------------------------------------------
-// Main entry point — logs in, then intercepts the API call Kling's own
-// frontend makes to fetch credit balance. No tab-clicking, no scraping.
+// Main entry point — logs in via browser, then calls Kling's API directly
+// using the authenticated session cookies to get credit balance.
 // ---------------------------------------------------------------------------
 async function checkKlingCredits() {
   console.log('Checking Kling.ai credits...');
@@ -250,132 +250,123 @@ async function checkKlingCredits() {
   const page = await context.newPage();
   await page.setViewportSize({ width: 1280, height: 720 });
 
-  // ── Intercept every API response and look for credit data ─────────────────
+  // Intercept ALL JSON API responses — log them all so we can find the
+  // credit endpoint, and capture any credit values we see along the way.
   let creditsFromApi = null;
+  const seenApis = [];
 
   context.on('response', async (response) => {
     const url = response.url();
-    // Kling's API calls for membership/credits typically contain these patterns
-    if (
-      url.includes('klingai.com') || url.includes('kling.ai') ||
-      url.includes('kuaishou') || url.includes('kwai')
-    ) {
-      if (
-        url.includes('credit') || url.includes('member') ||
-        url.includes('account') || url.includes('user') ||
-        url.includes('balance') || url.includes('quota')
-      ) {
-        try {
-          const contentType = response.headers()['content-type'] || '';
-          if (contentType.includes('application/json')) {
-            const body = await response.json().catch(() => null);
-            if (body) {
-              console.log('API response from: ' + url);
-              console.log('API body: ' + JSON.stringify(body).slice(0, 400));
-              // Recursively search the response for credit-like numbers
-              const found = findCreditsInObject(body);
-              if (found !== null && creditsFromApi === null) {
-                console.log('Credits found in API response: ' + found);
-                creditsFromApi = found;
-              }
-            }
-          }
-        } catch { /* ignore parse errors */ }
+    if (!url.includes('kling.ai') && !url.includes('klingai') &&
+        !url.includes('kuaishou') && !url.includes('kwai')) return;
+    try {
+      const ct = response.headers()['content-type'] || '';
+      if (!ct.includes('application/json')) return;
+      const body = await response.json().catch(() => null);
+      if (!body) return;
+      const bodyStr = JSON.stringify(body).slice(0, 300);
+      seenApis.push(url.split('?')[0]); // log base URL without query params
+      // Look for credit data in every API response
+      const found = findCreditsInObject(body);
+      if (found !== null && creditsFromApi === null) {
+        console.log('API credit hit: ' + url.split('?')[0] + ' → ' + found);
+        creditsFromApi = found;
       }
-    }
+    } catch { /* ignore */ }
   });
 
   try {
-    // ── 1. Land on the app ──────────────────────────────────────────────────
+    // ── 1. Load the app ────────────────────────────────────────────────────
     await page.goto('https://kling.ai/app', { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(3000);
     await page.screenshot({ path: 'ss1-initial.png' });
-    console.log('Page title: ' + await page.title());
 
-    // ── 2. Dismiss modals ───────────────────────────────────────────────────
+    // ── 2. Check login status via the API (not DOM — DOM is public) ─────────
+    const loginStatus = await page.evaluate(async () => {
+      try {
+        const r = await fetch('/api/user/isLogin', { credentials: 'include' });
+        const j = await r.json();
+        return j?.data?.login === true;
+      } catch { return false; }
+    });
+    console.log('API login check: ' + loginStatus);
+
+    // ── 3. Dismiss modals then login if needed ─────────────────────────────
     await dismissAllModals(page);
     await page.screenshot({ path: 'ss2-after-dismiss.png' });
 
-    // ── 3. Login if needed ──────────────────────────────────────────────────
-    const loggedIn = await isAlreadyLoggedIn(page);
-    console.log('Already logged in: ' + loggedIn);
-    if (!loggedIn) {
+    if (!loginStatus) {
+      console.log('Not logged in — performing login...');
       await performLogin(page);
-      // After login, dismiss any post-login modals
       await dismissAllModals(page);
+      await page.waitForTimeout(2000);
     } else {
-      console.log('Session active — skipping login flow.');
+      console.log('Already logged in via API check.');
     }
 
-    // ── 4. Read credits from the sidebar — visible right on /app ───────────
-    // The sidebar shows "16k" or "16,000" next to the user avatar.
-    // First try reading it directly from the DOM, then click it for full number.
-    console.log('Reading credits from sidebar...');
-    await page.waitForTimeout(1000);
-
-    // Strategy A: read the sidebar credit display directly
-    const sidebarCredits = await page.evaluate(() => {
-      // Look for the credit display element in the sidebar/bottom-left
-      // It typically shows something like "16k" or "16,000"
-      const allEls = [...document.querySelectorAll('*')];
-      for (const el of allEls) {
-        if (el.children.length > 0) continue; // leaf nodes only
-        const text = (el.innerText || el.textContent || '').trim();
-        // Match "16k", "16K", "16,000", or plain "16000"
-        if (/^\d+(\.\d+)?[kK]$/.test(text)) {
-          const num = parseFloat(text) * 1000;
-          if (num >= 100 && num <= 10000000) return Math.round(num);
-        }
-        if (/^[\d,]+$/.test(text)) {
-          const num = parseInt(text.replace(/,/g, ''));
-          if (num >= 1000 && num <= 10000000) return num;
-        }
-      }
-      return null;
-    });
-
-    if (sidebarCredits !== null) {
-      console.log('Credits from sidebar display: ' + sidebarCredits);
-      // Click the credit display to open the detail popup for exact number
-      await page.screenshot({ path: 'ss5-membership.png' });
-    }
-
-    // Strategy B: click the user/credit area in bottom-left to get exact count
-    console.log('Clicking credit display for exact count...');
-    const creditClickSelectors = [
-      // The credit display itself (shows "16k")
-      '[class*="credit" i]:not(script)',
-      '[class*="coin" i]:not(script)',
-      '[class*="balance" i]:not(script)',
-      // The user avatar / profile area at bottom of sidebar
-      '[class*="user" i] [class*="avatar" i]',
-      '[class*="userInfo" i]',
-      '[class*="user-info" i]',
-      '[class*="profile" i]',
+    // ── 4. Call known Kling credit APIs directly using session cookies ──────
+    console.log('Calling credit APIs...');
+    const creditEndpoints = [
+      '/api/user/credit/balance',
+      '/api/user/credits',
+      '/api/member/credit',
+      '/api/member/info',
+      '/api/membership/credit',
+      '/api/user/quota',
+      '/api/user/profile',
+      '/api/user/info',
     ];
-    let clicked = false;
-    for (const sel of creditClickSelectors) {
-      try {
-        await page.click(sel, { timeout: 2000 });
-        console.log('Clicked credit area via: ' + sel);
-        clicked = true;
-        await page.waitForTimeout(2000);
-        break;
-      } catch { continue; }
+
+    for (const endpoint of creditEndpoints) {
+      const result = await page.evaluate(async (ep) => {
+        try {
+          const r = await fetch(ep, { credentials: 'include' });
+          if (!r.ok) return null;
+          const j = await r.json();
+          return { url: ep, body: JSON.stringify(j).slice(0, 500) };
+        } catch { return null; }
+      }, endpoint);
+
+      if (result) {
+        console.log('API ' + result.url + ' → ' + result.body);
+        try {
+          const parsed = JSON.parse(result.body.length < 500
+            ? result.body
+            : await page.evaluate(async (ep) => {
+                const r = await fetch(ep, { credentials: 'include' });
+                return JSON.stringify(await r.json());
+              }, endpoint));
+          const found = findCreditsInObject(parsed);
+          if (found !== null) {
+            console.log('Credits from ' + endpoint + ': ' + found);
+            creditsFromApi = found;
+            break;
+          }
+        } catch { /* parse error, continue */ }
+      }
+    }
+
+    // ── 5. Navigate to membership to trigger more API calls ────────────────
+    if (creditsFromApi === null) {
+      console.log('Direct API calls found nothing. Navigating to /membership...');
+      await page.goto('https://kling.ai/app/membership', { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(4000);
+      await page.screenshot({ path: 'ss5-membership.png' });
+      console.log('APIs seen on membership page: ' + [...new Set(seenApis)].join(', '));
     }
 
     await page.screenshot({ path: 'ss6-credits-tab.png' });
 
-    // ── 5. Check if API interception already got the answer ─────────────────
     if (creditsFromApi !== null) {
-      console.log('Using credits from API: ' + creditsFromApi);
+      console.log('Final credits from API: ' + creditsFromApi);
       await browser.close();
       return creditsFromApi;
     }
 
-    // ── 6. Scrape the page/popup for the exact credit number ────────────────
+    // ── 6. Last resort: scrape visible page text ───────────────────────────
+    console.log('API approach failed — falling back to page scrape...');
     const credits = await scrapeCredits(page);
-    console.log('Credits found: ' + credits);
+    console.log('Credits from scrape: ' + credits);
     await browser.close();
     return credits;
 
