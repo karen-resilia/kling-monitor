@@ -301,56 +301,81 @@ async function checkKlingCredits() {
     console.log('Already logged in: ' + loggedIn);
     if (!loggedIn) {
       await performLogin(page);
+      // After login, dismiss any post-login modals
+      await dismissAllModals(page);
     } else {
       console.log('Session active — skipping login flow.');
     }
 
-    // ── 4. Navigate to membership page to trigger credit API calls ──────────
-    console.log('Navigating to /membership to trigger credit API calls...');
-    await page.goto('https://kling.ai/app/membership', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(4000); // wait for API calls to complete
-    await page.screenshot({ path: 'ss5-membership.png' });
+    // ── 4. Read credits from the sidebar — visible right on /app ───────────
+    // The sidebar shows "16k" or "16,000" next to the user avatar.
+    // First try reading it directly from the DOM, then click it for full number.
+    console.log('Reading credits from sidebar...');
+    await page.waitForTimeout(1000);
 
-    // ── 5. If API interception got credits, use them ────────────────────────
-    if (creditsFromApi !== null) {
-      console.log('Using credits from API interception: ' + creditsFromApi);
-      await browser.close();
-      return creditsFromApi;
+    // Strategy A: read the sidebar credit display directly
+    const sidebarCredits = await page.evaluate(() => {
+      // Look for the credit display element in the sidebar/bottom-left
+      // It typically shows something like "16k" or "16,000"
+      const allEls = [...document.querySelectorAll('*')];
+      for (const el of allEls) {
+        if (el.children.length > 0) continue; // leaf nodes only
+        const text = (el.innerText || el.textContent || '').trim();
+        // Match "16k", "16K", "16,000", or plain "16000"
+        if (/^\d+(\.\d+)?[kK]$/.test(text)) {
+          const num = parseFloat(text) * 1000;
+          if (num >= 100 && num <= 10000000) return Math.round(num);
+        }
+        if (/^[\d,]+$/.test(text)) {
+          const num = parseInt(text.replace(/,/g, ''));
+          if (num >= 1000 && num <= 10000000) return num;
+        }
+      }
+      return null;
+    });
+
+    if (sidebarCredits !== null) {
+      console.log('Credits from sidebar display: ' + sidebarCredits);
+      // Click the credit display to open the detail popup for exact number
+      await page.screenshot({ path: 'ss5-membership.png' });
     }
 
-    // ── 6. API didn't give us credits — try clicking the Credits tab ─────────
-    console.log('API interception did not find credits. Trying Credits tab...');
-    await dismissAllModals(page);
-
-    // Use force:true to click through any overlays that remain
-    let creditsTabClicked = false;
-    const creditsTabSelectors = [
-      'text="Credits"',
-      '[class*="tab"]:has-text("Credits")',
-      'button:has-text("Credits")',
-      'a:has-text("Credits")',
+    // Strategy B: click the user/credit area in bottom-left to get exact count
+    console.log('Clicking credit display for exact count...');
+    const creditClickSelectors = [
+      // The credit display itself (shows "16k")
+      '[class*="credit" i]:not(script)',
+      '[class*="coin" i]:not(script)',
+      '[class*="balance" i]:not(script)',
+      // The user avatar / profile area at bottom of sidebar
+      '[class*="user" i] [class*="avatar" i]',
+      '[class*="userInfo" i]',
+      '[class*="user-info" i]',
+      '[class*="profile" i]',
     ];
-    for (const sel of creditsTabSelectors) {
+    let clicked = false;
+    for (const sel of creditClickSelectors) {
       try {
-        await page.click(sel, { timeout: 4000, force: true });
-        console.log('Clicked Credits tab via: ' + sel);
-        creditsTabClicked = true;
-        await page.waitForTimeout(3000);
+        await page.click(sel, { timeout: 2000 });
+        console.log('Clicked credit area via: ' + sel);
+        clicked = true;
+        await page.waitForTimeout(2000);
         break;
       } catch { continue; }
     }
 
-    // ── 7. If Credits tab click triggered API call, check again ─────────────
+    await page.screenshot({ path: 'ss6-credits-tab.png' });
+
+    // ── 5. Check if API interception already got the answer ─────────────────
     if (creditsFromApi !== null) {
-      console.log('Credits tab click triggered API: ' + creditsFromApi);
+      console.log('Using credits from API: ' + creditsFromApi);
       await browser.close();
       return creditsFromApi;
     }
 
-    // ── 8. Last resort: scrape the page text ────────────────────────────────
-    await page.screenshot({ path: 'ss6-credits-tab.png' });
+    // ── 6. Scrape the page/popup for the exact credit number ────────────────
     const credits = await scrapeCredits(page);
-    console.log('Credits found via scraping: ' + credits);
+    console.log('Credits found: ' + credits);
     await browser.close();
     return credits;
 
@@ -413,8 +438,19 @@ async function scrapeCredits(page) {
   lines.forEach((l, i) => console.log(i + ': ' + l));
   console.log('--- End ---');
 
-  // Strategy 0: inline pattern "16,000 Credits" or "16000 Credits" on one line
-  // This is how the Credits tab often renders the balance.
+  // Strategy 0a: "16k" / "16K" abbreviated format (sidebar display)
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^(\d+(?:\.\d+)?)[kK]$/);
+    if (m) {
+      const val = Math.round(parseFloat(m[1]) * 1000);
+      if (val >= 1000 && val <= 10000000) {
+        console.log('Strategy 0a — k-abbreviated: ' + val);
+        return val;
+      }
+    }
+  }
+
+  // Strategy 0b: inline pattern "16,000 Credits" or "16000 Credits" on one line
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(/^([\d,]+)\s+credits?$/i);
     if (m) {
