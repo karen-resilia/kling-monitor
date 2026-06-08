@@ -34,22 +34,29 @@ const CONFIG = {
 };
 
 // ---------------------------------------------------------------------------
-// Modal dismissal — robust against whatever promo Kling throws up.
-// KEY: Uses dispatchEvent('click') not btn.click() — SVG-icon close buttons
-// absorb .click() calls on the SVG child, not the button parent. dispatchEvent
-// on the button element itself fires reliably regardless of icon children.
+// Modal dismissal — three-layer approach:
+// 1. Try clicking close buttons via selectors + pixel coords
+// 2. If that fails, forcibly REMOVE modal elements from the DOM entirely
+// 3. Log every button considered so we can see exactly what's happening
 // ---------------------------------------------------------------------------
 async function dismissAllModals(page) {
   console.log('Dismissing modals...');
 
-  // 1. Escape key
+  // Layer 1a: Escape key
   await page.keyboard.press('Escape');
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(800);
 
-  // 2. Playwright direct click on common close-button patterns
+  // Layer 1b: Pixel-accurate clicks on both known modal X positions
+  // Anniversary modal X: (793, 227)  |  Trial Package modal X: (1247, 50)
+  for (const [x, y] of [[1247, 50], [793, 227]]) {
+    await page.mouse.click(x, y);
+    await page.waitForTimeout(600);
+  }
+
+  // Layer 1c: Selector-based clicks
   const closeSelectors = [
     '[aria-label="close" i]',
-    '[aria-label="Close" ]',
+    '[aria-label="Close"]',
     '[aria-label="dismiss" i]',
     '[class*="closeBtn"]',
     '[class*="close-btn"]',
@@ -60,52 +67,58 @@ async function dismissAllModals(page) {
   ];
   for (const sel of closeSelectors) {
     try {
-      await page.click(sel, { timeout: 800, force: true });
-      console.log('Closed via selector: ' + sel);
-      await page.waitForTimeout(800);
+      await page.click(sel, { timeout: 600, force: true });
+      console.log('Selector click: ' + sel);
+      await page.waitForTimeout(500);
     } catch { /* not present */ }
   }
 
-  // 3. JS scan using dispatchEvent — works even when btn.click() is swallowed
-  //    by SVG icon children. Scans up to 8 times for stacked modals.
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const result = await page.evaluate(() => {
-      const buttons = [...document.querySelectorAll('button, [role="button"]')];
-      for (const btn of buttons) {
-        const rect = btn.getBoundingClientRect();
-        if (
-          rect.width > 0 && rect.height > 0 &&
-          rect.width < 65 && rect.height < 65 &&
-          rect.top > 0 && rect.top < 550 &&
-          rect.left > 0
-        ) {
-          // dispatchEvent is more reliable than .click() for buttons with SVG children
-          btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-          return `dispatchEvent click at (${Math.round(rect.left)},${Math.round(rect.top)}) ${Math.round(rect.width)}x${Math.round(rect.height)}`;
-        }
-      }
-      return null;
-    });
+  // Layer 2: Nuclear DOM removal — find and remove all modal/overlay containers.
+  // This is a guaranteed kill regardless of click handling.
+  const removed = await page.evaluate(() => {
+    const removed = [];
+    // Target elements that look like modal overlays
+    const candidates = document.querySelectorAll([
+      '[class*="modal" i]',
+      '[class*="overlay" i]',
+      '[class*="popup" i]',
+      '[class*="dialog" i]',
+      '[class*="toast" i]',
+      '[role="dialog"]',
+      '[role="alertdialog"]',
+    ].join(','));
 
-    if (result) {
-      console.log('Modal dismiss attempt ' + (attempt + 1) + ': ' + result);
-      await page.waitForTimeout(900);
-    } else {
-      console.log('No more dismissible buttons found after ' + attempt + ' attempt(s).');
-      break;
+    for (const el of candidates) {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      // Only remove elements that are actually visible and floating (fixed/absolute)
+      if (
+        rect.width > 100 &&
+        rect.height > 50 &&
+        (style.position === 'fixed' || style.position === 'absolute') &&
+        style.display !== 'none' &&
+        style.visibility !== 'hidden'
+      ) {
+        removed.push(el.className.slice(0, 60));
+        el.remove();
+      }
     }
+    return removed;
+  });
+
+  if (removed.length > 0) {
+    console.log('DOM-removed ' + removed.length + ' overlay element(s): ' + removed.join(' | '));
   }
 
-  // 4. Nuclear fallback — use Playwright mouse to click the exact pixel
-  //    coordinates of the Kling anniversary modal X button (793, 227).
-  //    This bypasses JS entirely and simulates a real mouse click.
-  await page.mouse.click(793, 227);
-  await page.waitForTimeout(700);
+  // Also remove any backdrop/dimmer elements left behind
+  await page.evaluate(() => {
+    document.querySelectorAll('[class*="mask" i], [class*="backdrop" i], [class*="dimmer" i]').forEach(el => {
+      const s = window.getComputedStyle(el);
+      if (s.position === 'fixed' || s.position === 'absolute') el.remove();
+    });
+  });
 
-  // 5. Click top-left corner to close any backdrop-click-dismissible overlays
-  await page.mouse.click(20, 20);
-  await page.waitForTimeout(500);
-
+  await page.waitForTimeout(400);
   console.log('Modal dismissal complete.');
 }
 
@@ -269,15 +282,25 @@ async function checkKlingCredits() {
     await page.screenshot({ path: 'ss5-membership.png' });
 
     // The "Sign in to Obtain Trial Package" modal always appears on this page.
-    // Its X close button is consistently at the top-right of the modal (~1247, 50).
-    // Use a direct pixel click — most reliable against this specific modal.
     console.log('Dismissing Trial Package modal...');
-    await page.mouse.click(1247, 50);
-    await page.waitForTimeout(800);
-
-    // Belt-and-suspenders: also run the full modal dismissal sweep
     await dismissAllModals(page);
     await page.waitForTimeout(500);
+
+    // Verify: log any remaining visible overlays so we can debug if needed
+    const surviving = await page.evaluate(() => {
+      return [...document.querySelectorAll('[class*="modal" i], [class*="overlay" i], [class*="popup" i], [role="dialog"]')]
+        .filter(el => {
+          const r = el.getBoundingClientRect();
+          const s = window.getComputedStyle(el);
+          return r.width > 100 && r.height > 50 && s.display !== 'none' && s.visibility !== 'hidden';
+        })
+        .map(el => el.className.slice(0, 80));
+    });
+    if (surviving.length > 0) {
+      console.log('WARNING: ' + surviving.length + ' overlay(s) still visible after dismissal: ' + surviving.join(' | '));
+    } else {
+      console.log('All overlays cleared.');
+    }
 
     // Now click the Credits tab — should be unblocked
     let creditsTabClicked = false;
